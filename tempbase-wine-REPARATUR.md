@@ -121,14 +121,34 @@ schon installiert ist. `--pruefen` zeigt ein defektes Schreibtisch-Symbol als
 `[FEHLT] Schreibtisch-Symbol ohne Starter`.
 
 **Zusaetzlich gehaertet (ebenfalls 2026-09-22):** Beide `.desktop`-Dateien (Startmenue + Schreibtisch) werden nach
-dem Fix mit `chmod 444` schreibgeschuetzt. Empirisch mit dem echten, direkt vom Hersteller-Server geladenen
-Update-Paket getestet: Wine/winemenubuilder ueberschreibt eine bestehende `.desktop`-Datei per open+truncate
-(nicht per unlink+rename) und haelt sich daher an fehlende Schreibrechte - ein erneuter Update-Lauf liess die
-schreibgeschuetzte Datei (Inode, Rechte, Inhalt) unveraendert, keine Fehlermeldung im Setup-Log. Ein Deinstallieren
-(unlink, braucht nur Verzeichnisrechte) bleibt davon unberuehrt moeglich. `install-tempbase-wine.sh` hebt den
-Schreibschutz bei einer eigenen Reparatur selbst kurz auf (`chmod u+w` vor dem Schreiben) und setzt ihn danach
-wieder. Damit ist ein erneuter Lauf nach jedem Update nur noch ein zusaetzliches Sicherheitsnetz, keine notwendige
-Voraussetzung mehr.
+dem Fix mit `chmod 555` schreibgeschuetzt (ausfuehrbar, aber fuer niemanden beschreibbar). Empirisch mit dem echten,
+direkt vom Hersteller-Server geladenen Update-Paket getestet: Wine/winemenubuilder ueberschreibt eine bestehende
+`.desktop`-Datei per open+truncate (nicht per unlink+rename) und haelt sich daher an fehlende Schreibrechte - ein
+erneuter Update-Lauf liess die schreibgeschuetzte Datei (Inode, Rechte, Inhalt) unveraendert, keine Fehlermeldung im
+Setup-Log. Ein Deinstallieren (unlink, braucht nur Verzeichnisrechte) bleibt davon unberuehrt moeglich.
+`install-tempbase-wine.sh` hebt den Schreibschutz bei einer eigenen Reparatur selbst kurz auf (`chmod u+w` vor dem
+Schreiben) und setzt ihn danach wieder. Damit ist ein erneuter Lauf nach jedem Update nur noch ein zusaetzliches
+Sicherheitsnetz, keine notwendige Voraussetzung mehr.
+
+**Nachtrag vom selben Tag - ZWEI eigene Fehler beim ersten Versuch, bitte beide beruecksichtigen:**
+1. Zuerst wurde `chmod 444` (kein X-Bit) verwendet. Ergebnis beim Benutzer: Der Schreibtisch-Link fragte
+   "vertrauenswuerdig?" (liess sich mit Ja trotzdem starten), der Startmenue-Link tat gar nichts - GNOME/Cinnamon/
+   Nemo behandeln eine `.desktop`-Datei ohne Ausfuehrungsbit nicht als startbar. Korrektur: `chmod 555` statt
+   `444` ueberall (im Fix selbst UND im neu angelegten Ersatz-Menueeintrag, falls Wine keinen erstellt hat).
+   Wichtig: das X-Bit einer `.desktop`-Datei hat NICHTS mit der Ausfuehrbarkeit des `Exec=`-Ziels zu tun, es ist
+   eine reine Vertrauens-/Startbarkeits-Markierung der Desktop-Umgebung.
+2. Der Startmenue-Eintrag `.../applications/wine/Programs/tempbase 2/tempbase 2.desktop` enthielt eine `Path=`-
+   Zeile (Arbeitsverzeichnis beim Start), die zufaellig noch auf einen laengst geloeschten Sandbox-Testordner
+   zeigte (Ueberbleibsel davon, dass Wine diese Zeile beim Erstellen mit dem WINEPREFIX aus dem gerade laufenden
+   Testkontext befuellt hatte). Ein nicht (mehr) existierendes `Path=`-Verzeichnis laesst den Start lautlos
+   scheitern - kein Dialog, keine Fehlermeldung, das Symbol tut einfach nichts. `fix_desktop_file()` in
+   `install-tempbase-wine.sh` setzt `Path=` seitdem IMMER explizit auf `$TB_DIR` (den echten tempbase-Ordner im
+   aktuellen `$WINEPREFIX`), unabhaengig davon, was vorher dort stand.
+   **Lehre fuer eigene Tests:** Sandbox-Testlaeufe (eigener `WINEPREFIX`/`XDG_DATA_HOME`) koennen trotzdem in die
+   ECHTEN `~/.local/share/applications/**`-Dateien hineinschreiben, wenn Wine's winemenubuilder darin zufaellig
+   den gerade aktiven `WINEPREFIX`-Pfad vermerkt (analog zum Schreibtisch-Fall oben). Nach Sandbox-Tests immer
+   `grep -r "Path=\|scratchpad\|/tmp/" ~/.local/share/applications ~/Schreibtisch 2>/dev/null` pruefen, um
+   Verunreinigungen der echten Dateien zu finden, bevor man den Fall als erledigt betrachtet.
 
 **Ebenfalls mit dem echten Update-Paket ueberprueft:** Der Windows-Startmenue-Eintrag selbst wird von einer
 tempbase-Selbstaktualisierung NICHT neu geschrieben (Zeitstempel vor/nach einem echten Versionssprung 3.1.2 -> 3.1.4
@@ -146,7 +166,7 @@ direkt herunterladen, ohne den Update-Dialog in der laufenden Anwendung anklicke
    `readlink ~/Schreibtisch` zeigt es), findet `find <symlink> ...` OHNE `-L` darin NICHTS - vorher mit
    `readlink -f` auf den echten Pfad aufloesen (macht `install-tempbase-wine.sh` bereits fuer `DESKTOP_DIR`).
 3. Legt tempbase kuenftig weitere Verknuepfungsorte an (Schnellstart, angepinnt): gleiches Muster - Datei finden,
-   `chmod u+w`, `Exec=` per `sed` auf `"$SHIM_DIR/tempbase-start.sh"` umbiegen, `chmod 444`.
+   `chmod u+w`, `Exec=` (und ggf. `Path=`) per `sed` auf den Starter/`$TB_DIR` umbiegen, `chmod 555`.
 
 ## Hinweise
 

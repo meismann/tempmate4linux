@@ -66,12 +66,16 @@
 #      und schreibt ihn nicht neu.
 #      -> Dieses Skript biegt ein vorhandenes Schreibtisch-Symbol ebenfalls auf
 #      den Starter um (Schritt 5) und macht danach BEIDE Verknuepfungen
-#      schreibgeschuetzt (chmod 444): Wine ueberschreibt eine bestehende
-#      .desktop-Datei nachweislich per open+truncate, nicht per unlink+rename,
-#      und haelt sich daher an fehlende Schreibrechte (ein spaeteres Loeschen
-#      beim Deinstallieren bleibt moeglich, da unlink nur Verzeichnisrechte
-#      braucht). Ein erneuter Lauf dieses Skripts nach einem Update ist damit nur
-#      noch ein zusaetzliches Sicherheitsnetz, keine notwendige Voraussetzung.
+#      schreibgeschuetzt (chmod 555, also ausfuehrbar, aber fuer niemanden
+#      beschreibbar - das X-Bit brauchen GNOME/Cinnamon/Nemo, um die Datei
+#      ueberhaupt als startbar/vertrauenswuerdig zu behandeln; das fehlende
+#      Schreibrecht ist es, was Wine am Ueberschreiben hindert). Wine
+#      ueberschreibt eine bestehende .desktop-Datei nachweislich per
+#      open+truncate, nicht per unlink+rename, und haelt sich daher an
+#      fehlende Schreibrechte (ein spaeteres Loeschen beim Deinstallieren
+#      bleibt moeglich, da unlink nur Verzeichnisrechte braucht). Ein
+#      erneuter Lauf dieses Skripts nach einem Update ist damit nur noch ein
+#      zusaetzliches Sicherheitsnetz, keine notwendige Voraussetzung.
 
 set -euo pipefail
 
@@ -587,14 +591,34 @@ schon installiert ist. `--pruefen` zeigt ein defektes Schreibtisch-Symbol als
 `[FEHLT] Schreibtisch-Symbol ohne Starter`.
 
 **Zusaetzlich gehaertet (ebenfalls 2026-09-22):** Beide `.desktop`-Dateien (Startmenue + Schreibtisch) werden nach
-dem Fix mit `chmod 444` schreibgeschuetzt. Empirisch mit dem echten, direkt vom Hersteller-Server geladenen
-Update-Paket getestet: Wine/winemenubuilder ueberschreibt eine bestehende `.desktop`-Datei per open+truncate
-(nicht per unlink+rename) und haelt sich daher an fehlende Schreibrechte - ein erneuter Update-Lauf liess die
-schreibgeschuetzte Datei (Inode, Rechte, Inhalt) unveraendert, keine Fehlermeldung im Setup-Log. Ein Deinstallieren
-(unlink, braucht nur Verzeichnisrechte) bleibt davon unberuehrt moeglich. `install-tempbase-wine.sh` hebt den
-Schreibschutz bei einer eigenen Reparatur selbst kurz auf (`chmod u+w` vor dem Schreiben) und setzt ihn danach
-wieder. Damit ist ein erneuter Lauf nach jedem Update nur noch ein zusaetzliches Sicherheitsnetz, keine notwendige
-Voraussetzung mehr.
+dem Fix mit `chmod 555` schreibgeschuetzt (ausfuehrbar, aber fuer niemanden beschreibbar). Empirisch mit dem echten,
+direkt vom Hersteller-Server geladenen Update-Paket getestet: Wine/winemenubuilder ueberschreibt eine bestehende
+`.desktop`-Datei per open+truncate (nicht per unlink+rename) und haelt sich daher an fehlende Schreibrechte - ein
+erneuter Update-Lauf liess die schreibgeschuetzte Datei (Inode, Rechte, Inhalt) unveraendert, keine Fehlermeldung im
+Setup-Log. Ein Deinstallieren (unlink, braucht nur Verzeichnisrechte) bleibt davon unberuehrt moeglich.
+`install-tempbase-wine.sh` hebt den Schreibschutz bei einer eigenen Reparatur selbst kurz auf (`chmod u+w` vor dem
+Schreiben) und setzt ihn danach wieder. Damit ist ein erneuter Lauf nach jedem Update nur noch ein zusaetzliches
+Sicherheitsnetz, keine notwendige Voraussetzung mehr.
+
+**Nachtrag vom selben Tag - ZWEI eigene Fehler beim ersten Versuch, bitte beide beruecksichtigen:**
+1. Zuerst wurde `chmod 444` (kein X-Bit) verwendet. Ergebnis beim Benutzer: Der Schreibtisch-Link fragte
+   "vertrauenswuerdig?" (liess sich mit Ja trotzdem starten), der Startmenue-Link tat gar nichts - GNOME/Cinnamon/
+   Nemo behandeln eine `.desktop`-Datei ohne Ausfuehrungsbit nicht als startbar. Korrektur: `chmod 555` statt
+   `444` ueberall (im Fix selbst UND im neu angelegten Ersatz-Menueeintrag, falls Wine keinen erstellt hat).
+   Wichtig: das X-Bit einer `.desktop`-Datei hat NICHTS mit der Ausfuehrbarkeit des `Exec=`-Ziels zu tun, es ist
+   eine reine Vertrauens-/Startbarkeits-Markierung der Desktop-Umgebung.
+2. Der Startmenue-Eintrag `.../applications/wine/Programs/tempbase 2/tempbase 2.desktop` enthielt eine `Path=`-
+   Zeile (Arbeitsverzeichnis beim Start), die zufaellig noch auf einen laengst geloeschten Sandbox-Testordner
+   zeigte (Ueberbleibsel davon, dass Wine diese Zeile beim Erstellen mit dem WINEPREFIX aus dem gerade laufenden
+   Testkontext befuellt hatte). Ein nicht (mehr) existierendes `Path=`-Verzeichnis laesst den Start lautlos
+   scheitern - kein Dialog, keine Fehlermeldung, das Symbol tut einfach nichts. `fix_desktop_file()` in
+   `install-tempbase-wine.sh` setzt `Path=` seitdem IMMER explizit auf `$TB_DIR` (den echten tempbase-Ordner im
+   aktuellen `$WINEPREFIX`), unabhaengig davon, was vorher dort stand.
+   **Lehre fuer eigene Tests:** Sandbox-Testlaeufe (eigener `WINEPREFIX`/`XDG_DATA_HOME`) koennen trotzdem in die
+   ECHTEN `~/.local/share/applications/**`-Dateien hineinschreiben, wenn Wine's winemenubuilder darin zufaellig
+   den gerade aktiven `WINEPREFIX`-Pfad vermerkt (analog zum Schreibtisch-Fall oben). Nach Sandbox-Tests immer
+   `grep -r "Path=\|scratchpad\|/tmp/" ~/.local/share/applications ~/Schreibtisch 2>/dev/null` pruefen, um
+   Verunreinigungen der echten Dateien zu finden, bevor man den Fall als erledigt betrachtet.
 
 **Ebenfalls mit dem echten Update-Paket ueberprueft:** Der Windows-Startmenue-Eintrag selbst wird von einer
 tempbase-Selbstaktualisierung NICHT neu geschrieben (Zeitstempel vor/nach einem echten Versionssprung 3.1.2 -> 3.1.4
@@ -612,7 +636,7 @@ direkt herunterladen, ohne den Update-Dialog in der laufenden Anwendung anklicke
    `readlink ~/Schreibtisch` zeigt es), findet `find <symlink> ...` OHNE `-L` darin NICHTS - vorher mit
    `readlink -f` auf den echten Pfad aufloesen (macht `install-tempbase-wine.sh` bereits fuer `DESKTOP_DIR`).
 3. Legt tempbase kuenftig weitere Verknuepfungsorte an (Schnellstart, angepinnt): gleiches Muster - Datei finden,
-   `chmod u+w`, `Exec=` per `sed` auf `"$SHIM_DIR/tempbase-start.sh"` umbiegen, `chmod 444`.
+   `chmod u+w`, `Exec=` (und ggf. `Path=`) per `sed` auf den Starter/`$TB_DIR` umbiegen, `chmod 555`.
 
 ## Hinweise
 
@@ -627,7 +651,7 @@ direkt herunterladen, ohne den Update-Dialog in der laufenden Anwendung anklicke
 MDEOF
 
 # Biegt eine .desktop-Datei auf den Starter um und macht sie danach schreibgeschuetzt
-# (chmod 444). Wine/winemenubuilder ueberschreibt eine bestehende .desktop-Datei per
+# (chmod 555). Wine/winemenubuilder ueberschreibt eine bestehende .desktop-Datei per
 # open+truncate (nicht per unlink+rename) - das respektiert normale Dateirechte, ein
 # Loeschen beim Deinstallieren (unlink, nur Verzeichnisrechte noetig) bleibt moeglich.
 # Damit bleibt unsere Umleitung auch dann bestehen, wenn tempbase/Wine spaeter versucht,
@@ -637,7 +661,20 @@ fix_desktop_file() {
     chmod u+w "$df" 2>/dev/null || true
     cp -n -p "$df" "$backup" 2>/dev/null || true
     sed -i -E "s#^(Exec(\[[a-z_A-Z@]+\])?=).*#\1\"$SHIM_DIR/tempbase-start.sh\"#" "$df"
-    chmod 444 "$df"
+    # "Path=" (Arbeitsverzeichnis beim Start) ebenfalls fest auf den echten tempbase-Ordner
+    # setzen, statt sich auf das zu verlassen, was Wine dort eingetragen hat - ein falscher/
+    # nicht mehr existierender Pfad laesst den Start sonst lautlos scheitern (kein Dialog,
+    # keine Fehlermeldung, das Startmenue-Symbol tut einfach nichts).
+    if grep -q '^Path=' "$df"; then
+        sed -i -E "s#^Path=.*#Path=$TB_DIR#" "$df"
+    else
+        printf 'Path=%s\n' "$TB_DIR" >> "$df"
+    fi
+    # chmod 555 statt 444: das Ausfuehrungsbit ist noetig, damit GNOME/Cinnamon/Nemo die
+    # Datei ueberhaupt als startbare/vertrauenswuerdige .desktop-Datei behandeln. Das
+    # W-Bit bleibt fuer niemanden gesetzt - das (nicht das X-Bit) ist es, was Wine daran
+    # hindert, die Datei bei einem tempbase-Update stillschweigend zu ueberschreiben.
+    chmod 555 "$df"
 }
 
 mkdir -p "$APPS_DIR"
@@ -659,7 +696,7 @@ Icon=${ICON:-wine}
 Categories=Utility;
 StartupNotify=true
 DEOF
-    chmod 444 "$APPS_DIR/tempbase-2.desktop"
+    chmod 555 "$APPS_DIR/tempbase-2.desktop"
     echo "    Wine hat keinen Menue-Eintrag angelegt; erstellt: $APPS_DIR/tempbase-2.desktop"
 fi
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APPS_DIR" 2>/dev/null || true
