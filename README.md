@@ -40,9 +40,9 @@ Two independent causes, both worked around here:
 None of this is TempMate's fault as such — the root cause is arguably a Wine Mono
 bug in how it implements overlapped `FileStream` reads. A bug report for
 [wine-mono](https://gitlab.winehq.org/mono/wine-mono) is drafted but not filed yet;
-if someone wants to pick that up, see the "Vorgehen bei einer neuen tempbase-Version"
-section of `tempbase-wine-REPARATUR.md` for the technical background and a minimal
-C# reproduction.
+if someone wants to pick that up, see the "The cause" and "Procedure for a new
+tempbase version" sections of `tempbase-wine-REPAIR.md` for the technical background
+and how the error was made visible.
 
 ## The two files
 
@@ -50,12 +50,12 @@ C# reproduction.
   path to TempMate's official `tempbase 2 Vx.x.x.exe` installer to set up Wine,
   the udev rule for the logger, and tempbase 2 from scratch; run it again with no
   argument any time afterwards (e.g. after a tempbase self-update) to re-check and
-  re-apply the fix. `./install-tempbase-wine.sh --pruefen` checks the current state
+  re-apply the fix. `./install-tempbase-wine.sh --check` checks the current state
   without changing anything, and `./install-tempbase-wine.sh --help` prints all
   options. The script is self-documenting — read the comment header for the full
   list of what each step does and why.
 
-- **`tempbase-wine-REPARATUR.md`** — a troubleshooting brief, written to be handed
+- **`tempbase-wine-REPAIR.md`** — a troubleshooting brief, written to be handed
   to an AI coding assistant (it was developed with
   [Claude Code](https://claude.com/claude-code)) rather than to a human. If a
   future tempbase 2 update changes the code enough that the automatic patch no
@@ -89,12 +89,12 @@ work but haven't all been tested; reports welcome either way.
 ```
 ./install-tempbase-wine.sh "/path/to/tempbase 2 V3.1.2.exe"   # first install
 ./install-tempbase-wine.sh                                     # re-check/repair later
-./install-tempbase-wine.sh --pruefen                            # check only, no changes
+./install-tempbase-wine.sh --check                              # check only, no changes
 ./install-tempbase-wine.sh --help
 ```
 
-Requires a Debian/Ubuntu-based distro with `apt` and `sudo`. Pass `--ja` to skip
-confirmation prompts and `--ohne-apt` to skip all system-level changes (package
+Requires a Debian/Ubuntu-based distro with `apt` and `sudo`. Pass `--yes` to skip
+confirmation prompts and `--no-apt` to skip all system-level changes (package
 installation, udev rule, group membership) and only touch the Wine prefix and
 tempbase 2 itself.
 
@@ -106,7 +106,7 @@ Particularly useful contributions:
 - Confirming (or fixing) this on other Debian/Ubuntu derivatives, or other Wine
   versions.
 - Updating the `DL.exe` byte pattern for newer tempbase 2 releases (see
-  `tempbase-wine-REPARATUR.md`).
+  `tempbase-wine-REPAIR.md`).
 - Filing and following up on the Wine Mono bug report mentioned above — if that
   gets fixed upstream, the `DL.exe` patch in this script becomes unnecessary.
 - Support for other TempMate logger models (different USB VID/PID than
@@ -124,6 +124,4 @@ Use it at your own risk, and always keep your own backups of any data recorded b
 your logger. `DL.exe.orig` (the unpatched original) is kept alongside the patched
 file for anyone who wants to revert.
 
-No license has been chosen for this repository yet. Until one is added, please
-treat it as "look but don't reuse" beyond what GitHub's own terms of service
-allow for forking; get in touch if you'd like to use it under specific terms.
+Copyright (c) 2026 Martin Eismann under MIT-License

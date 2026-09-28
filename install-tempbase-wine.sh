@@ -1,101 +1,97 @@
 #!/usr/bin/env bash
 #
-# install-tempbase-wine.sh - Linux-Installationsskript fuer tempbase 2
+# install-tempbase-wine.sh - Linux installer for tempbase 2
 #
-# Installiert aus der Windows-Setup-Datei von tempbase 2 ein lauffaehiges
-# Programm unter Wine, inklusive USB-Fix fuer den TempMate-Logger.
-# Getestet fuer Linux Mint 22 / Ubuntu 24.04 (apt, WineHQ-Repository).
+# Turns the Windows setup file of tempbase 2 into a working program under Wine,
+# including a USB fix for the TempMate logger.
+# Tested on Linux Mint 22 / Ubuntu 24.04 (apt, WineHQ repository).
 #
-# Aufruf:
-#   ./install-tempbase-wine.sh "/pfad/zu/tempbase 2 V3.1.2.exe"   # Erstinstallation
-#   ./install-tempbase-wine.sh                    # Reparatur (Datei nicht noetig,
-#                                                  # wenn tempbase 2 schon installiert ist)
-#   ./install-tempbase-wine.sh --pruefen          # nur den Zustand pruefen
+# Usage:
+#   ./install-tempbase-wine.sh "/path/to/tempbase 2 V3.1.2.exe"   # first install
+#   ./install-tempbase-wine.sh                    # repair (file not needed if
+#                                                  # tempbase 2 is already installed)
+#   ./install-tempbase-wine.sh --check            # only check the current state
 #
-# Optionen:
-#   --ja           Rueckfragen automatisch mit "ja" beantworten
-#   --ohne-apt     Keine Systempakete/udev/Gruppen aendern (nur Prefix und Programm)
-#   --pruefen      Nichts installieren, nur die Installation ueberpruefen
-# Umgebungsvariablen:
-#   WINEPREFIX     Wine-Prefix (Standard: ~/.wine)
-#   XDG_DATA_HOME  Ort fuer Menue-Eintraege und Hilfsdateien (Standard: ~/.local/share)
+# Options:
+#   --yes          Answer all prompts with "yes"
+#   --no-apt       Do not touch system packages/udev/groups (only prefix and program)
+#   --check        Install nothing, only check the installation
+# Environment variables:
+#   WINEPREFIX     Wine prefix (default: ~/.wine)
+#   XDG_DATA_HOME  Location for menu entries and helper files (default: ~/.local/share)
 #
-# Was das Skript macht:
-#   1. Systempakete: i386-Architektur, winbind, gcc u.a.; WineHQ-Repository;
-#      winehq-devel (der stable-Zweig 11.0 hat einen USB-Fehler, EIO beim Lesen)
-#   2. udev-Regel und Gruppe "plugdev", damit der normale Benutzer auf den
-#      USB-Logger (04d8:0015) zugreifen darf
-#   3. frischer 64-Bit-Prefix (ein vorhandener wird beiseitegesichert), wine-mono
-#      wird vorher geladen und still installiert (kein Mono-Dialog)
-#   4. stille Installation von tempbase 2
-#   5. USB-Fix (Hintergrund siehe unten): DL.exe patchen, HID-Shim bauen,
-#      Programmstarter mit automatischer Patch-Pruefung bei jedem Start,
-#      Startmenue- UND Schreibtisch-Eintraege darauf umstellen
-#   6. Abschlusspruefung
+# What the script does:
+#   1. System packages: i386 architecture, winbind, gcc etc.; WineHQ repository;
+#      winehq-devel (the stable branch 11.0 has a USB bug, EIO on read)
+#   2. udev rule and group "plugdev", so that the regular user may access the
+#      USB logger (04d8:0015)
+#   3. fresh 64-bit prefix (an existing one is moved aside), wine-mono is
+#      downloaded beforehand and installed silently (no Mono dialog)
+#   4. silent installation of tempbase 2
+#   5. USB fix (background see below): patch DL.exe, build HID shim,
+#      launcher with automatic patch check on every start,
+#      redirect Start Menu AND desktop entries to it
+#   6. final check
 #
-# Ohne Installationsdatei aufgerufen, wenn tempbase 2 schon installiert ist, wird nur
-# Schritt 5+6 wiederholt - das ist der empfohlene Weg, um den Fix nach einer
-# tempbase-Selbstaktualisierung erneut anzuwenden (siehe Punkt d unten).
+# When called without an installer file and tempbase 2 is already installed, only
+# steps 5+6 are repeated - this is the recommended way to re-apply the fix after a
+# tempbase self-update (see item d below).
 #
-# Hintergrund des USB-Fixes ("Device disconnected"):
-#   a) DL.exe oeffnet den Logger mit FILE_FLAG_OVERLAPPED, liest aber ueber ein
-#      synchron arbeitendes .NET-FileStream (Wine Mono). Trifft ein Lesevorgang
-#      auf eine noch nicht gelieferte Antwort, kommt ERROR_IO_PENDING (997).
-#      tempbase faengt die Ausnahme still ab und bricht den Verbindungsaufbau
-#      nach 4 von 31 Paketen ab. -> DL.exe wird an einer Stelle gepatcht
-#      (Konstante 0x40000000 -> 0). Das Original bleibt als DL.exe.orig erhalten.
-#   b) Der Logger beantwortet Anfragen nicht, die dichter als ca. 300 ms
-#      aufeinander folgen (tempbase sendet alle 80 ms). -> LD_PRELOAD-Shim.
-#   c) tempbase aktualisiert sich selbst und ersetzt dabei DL.exe. Der Starter
-#      (tempbase-start.sh) prueft deshalb bei jedem Start, ob der Patch drin
-#      ist, und patcht bei Bedarf neu. Passt das Byte-Muster nicht mehr, aendert
-#      er nichts, zeigt eine Meldung und startet tempbase trotzdem.
-#      Protokoll: <XDG_DATA_HOME>/tempbase-shim/start.log
-#   d) Die Selbstaktualisierung laedt dafuer ein VOLLES, nicht-stilles Setup
-#      herunter und startet es ohne Silent-Parameter (im Gegensatz zur stillen
-#      Erstinstallation durch dieses Skript). Dieses Setup legt dabei jedes Mal
-#      neu eine Verknuepfung auf dem Windows-"Desktop" an. Wine erzeugt dafuer
-#      ein EIGENES, zweites .desktop direkt auf dem echten Schreibtisch
-#      (unabhaengig von XDG_DATA_HOME) mit einem PLAIN "wine ..."-Aufruf, ohne
-#      unseren Starter. Ein Doppelklick auf dieses (neue) Schreibtisch-Symbol
-#      umgeht damit sowohl den USB-Patch als auch den HID-Shim, OHNE dass
-#      irgendeine Fehlermeldung erscheint (der Starter wird ja gar nicht
-#      aufgerufen) - nur "Device disconnected" wie zuvor. Der Windows-
-#      Startmenue-Eintrag selbst ist davon nachweislich NICHT betroffen (getestet
-#      mit einem echten Versions-Update): Wine erkennt ihn als bereits vorhanden
-#      und schreibt ihn nicht neu.
-#      -> Dieses Skript biegt ein vorhandenes Schreibtisch-Symbol ebenfalls auf
-#      den Starter um (Schritt 5) und macht danach BEIDE Verknuepfungen
-#      schreibgeschuetzt (chmod 555, also ausfuehrbar, aber fuer niemanden
-#      beschreibbar - das X-Bit brauchen GNOME/Cinnamon/Nemo, um die Datei
-#      ueberhaupt als startbar/vertrauenswuerdig zu behandeln; das fehlende
-#      Schreibrecht ist es, was Wine am Ueberschreiben hindert). Wine
-#      ueberschreibt eine bestehende .desktop-Datei nachweislich per
-#      open+truncate, nicht per unlink+rename, und haelt sich daher an
-#      fehlende Schreibrechte (ein spaeteres Loeschen beim Deinstallieren
-#      bleibt moeglich, da unlink nur Verzeichnisrechte braucht). Ein
-#      erneuter Lauf dieses Skripts nach einem Update ist damit nur noch ein
-#      zusaetzliches Sicherheitsnetz, keine notwendige Voraussetzung.
+# Background of the USB fix ("Device disconnected"):
+#   a) DL.exe opens the logger with FILE_FLAG_OVERLAPPED, but reads through a
+#      synchronous .NET FileStream (Wine Mono). If a read hits a response that
+#      has not been delivered yet, it gets ERROR_IO_PENDING (997). tempbase
+#      silently catches the exception and aborts the connection setup after
+#      4 of 31 packets. -> DL.exe is patched in one place
+#      (constant 0x40000000 -> 0). The original is kept as DL.exe.orig.
+#   b) The logger does not answer requests that follow each other closer than
+#      about 300 ms (tempbase sends every 80 ms). -> LD_PRELOAD shim.
+#   c) tempbase updates itself and replaces DL.exe in the process. The launcher
+#      (tempbase-start.sh) therefore checks on every start whether the patch is
+#      in place and re-patches if needed. If the byte pattern no longer matches,
+#      it changes nothing, shows a message and starts tempbase anyway.
+#      Log: <XDG_DATA_HOME>/tempbase-shim/start.log
+#   d) For this, the self-update downloads a FULL, non-silent setup and runs it
+#      without silent parameters (unlike the silent first install done by this
+#      script). Every time, this setup creates a new shortcut on the Windows
+#      "Desktop". Wine turns that into a SEPARATE, second .desktop file directly
+#      on the real desktop (independent of XDG_DATA_HOME) with a PLAIN "wine ..."
+#      call, without our launcher. Double-clicking this (new) desktop icon thus
+#      bypasses both the USB patch and the HID shim WITHOUT any error message
+#      (the launcher is never called) - just "Device disconnected" as before.
+#      The Windows Start Menu entry itself is demonstrably NOT affected (tested
+#      with a real version update): Wine recognizes it as already existing and
+#      does not rewrite it.
+#      -> This script also redirects an existing desktop icon to the launcher
+#      (step 5) and then makes BOTH shortcuts read-only (chmod 555, i.e.
+#      executable but writable by nobody - GNOME/Cinnamon/Nemo need the X bit to
+#      treat the file as launchable/trusted at all; the missing write permission
+#      is what stops Wine from overwriting it). Wine demonstrably overwrites an
+#      existing .desktop file via open+truncate, not via unlink+rename, and
+#      therefore respects missing write permissions (deleting it later when
+#      uninstalling still works, since unlink only needs directory permissions).
+#      Re-running this script after an update is thus only an additional
+#      safety net, not a requirement.
 
 set -euo pipefail
 
-# ---------------------------------------------------------------- Einstellungen
+# ---------------------------------------------------------------- Settings
 WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
 export WINEPREFIX
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 APPS_DIR="$DATA_HOME/applications"
 SHIM_DIR="$DATA_HOME/tempbase-shim"
-# Wine legt fuer JEDE Windows-Verknuepfung, die unter "...\Desktop" liegt, zusaetzlich
-# ein eigenes .desktop auf dem echten Schreibtisch an (ueber xdg-user-dir, UNABHAENGIG
-# von XDG_DATA_HOME). tempbase legt bei seiner Selbstaktualisierung (volles, nicht
-# stilles Setup) jedes Mal so eine Verknuepfung neu an - dieser zweite Ort muss beim
-# Patchen der Programmstarter mit beruecksichtigt werden, sonst zeigt ein Doppelklick
-# auf das Schreibtisch-Symbol nach einem Update wieder auf ungepatchtes tempbase.
+# For EVERY Windows shortcut located under "...\Desktop", Wine additionally creates
+# its own .desktop file on the real desktop (via xdg-user-dir, INDEPENDENT of
+# XDG_DATA_HOME). tempbase creates such a shortcut anew on every self-update (full,
+# non-silent setup) - this second location must be taken into account when patching
+# the launchers, otherwise double-clicking the desktop icon after an update points
+# to unpatched tempbase again.
 DESKTOP_DIR="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
 [ -n "$DESKTOP_DIR" ] || DESKTOP_DIR="$HOME/Desktop"
-# Manche Setups (z.B. Schreibtisch als Symlink auf einen Cloud-Sync-Ordner) haben hier
-# einen symbolischen Link. "find" folgt einem Symlink als Startpfad standardmaessig NICHT
-# und faende dann nichts darin - deshalb hier einmal auf den echten Pfad aufloesen.
+# Some setups (e.g. desktop as a symlink to a cloud sync folder) have a symbolic link
+# here. "find" does NOT follow a symlink given as start path by default and would
+# then find nothing in it - so resolve it to the real path once here.
 DESKTOP_DIR="$(readlink -f "$DESKTOP_DIR" 2>/dev/null || echo "$DESKTOP_DIR")"
 WINE=/opt/wine-devel/bin/wine
 WINESERVER=/opt/wine-devel/bin/wineserver
@@ -103,119 +99,122 @@ TB_DIR="$WINEPREFIX/drive_c/tempbase 2"
 UDEV_RULE=/etc/udev/rules.d/99-tempmate-hidraw.rules
 TEMPMATE_VID="04d8"
 TEMPMATE_PID="0015"
+# Uninstall entries are left alone ("entfernen": German-localized entries).
+UNINSTALL_FILTER=(-e entfernen -e uninstall -e remove -e deinstall)
 
-JA=0; OHNE_APT=0; NUR_PRUEFEN=0; INSTALLER=""
+YES=0; NO_APT=0; CHECK_ONLY=0; INSTALLER=""
 
 info() { echo "==> $*"; }
-warn() { echo "    Warnung: $*" >&2; }
-die()  { echo "Fehler: $*" >&2; exit 1; }
+warn() { echo "    Warning: $*" >&2; }
+die()  { echo "Error: $*" >&2; exit 1; }
 
-frage() {   # frage "Text"  -> 0 bei ja
-    [ "$JA" = 1 ] && return 0
-    local a; read -r -p "$1 [j/N] " a
-    case "$a" in j|J|ja|Ja|JA|y|Y) return 0;; *) return 1;; esac
+ask() {   # ask "text"  -> 0 on yes
+    [ "$YES" = 1 ] && return 0
+    local a; read -r -p "$1 [y/N] " a
+    case "$a" in y|Y|yes|Yes|YES) return 0;; *) return 1;; esac
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --ja) JA=1;;
-        --ohne-apt) OHNE_APT=1;;
-        --pruefen) NUR_PRUEFEN=1;;
-        -h|--help) sed -n '2,50p' "$0"; exit 0;;
-        -*) die "Unbekannte Option: $1 (siehe --help)";;
-        *) [ -z "$INSTALLER" ] || die "Nur eine Installationsdatei angeben."; INSTALLER="$1";;
+        # The German option names of earlier versions are still accepted.
+        --yes|--ja) YES=1;;
+        --no-apt|--ohne-apt) NO_APT=1;;
+        --check|--pruefen) CHECK_ONLY=1;;
+        -h|--help) sed -n '2,/^$/p' "$0"; exit 0;;
+        -*) die "Unknown option: $1 (see --help)";;
+        *) [ -z "$INSTALLER" ] || die "Specify only one installer file."; INSTALLER="$1";;
     esac
     shift
 done
 
-# ------------------------------------------------------- Abschlusspruefung
-pruefen() {
+# ------------------------------------------------------- Final check
+check_install() {
     local fail=0
-    ok()  { printf '  [OK]     %s\n' "$*"; }
-    bad() { printf '  [FEHLT]  %s\n' "$*"; fail=1; }
-    hin() { printf '  [HINWEIS] %s\n' "$*"; }
+    ok()   { printf '  [OK]      %s\n' "$*"; }
+    bad()  { printf '  [MISSING] %s\n' "$*"; fail=1; }
+    note() { printf '  [NOTE]    %s\n' "$*"; }
 
-    info "Pruefung der Installation"
-    if [ -x "$WINE" ]; then ok "wine-devel: $("$WINE" --version 2>/dev/null)"; else bad "wine-devel ($WINE) fehlt"; fi
+    info "Checking the installation"
+    if [ -x "$WINE" ]; then ok "wine-devel: $("$WINE" --version 2>/dev/null)"; else bad "wine-devel ($WINE) is missing"; fi
     if [ -f "$WINEPREFIX/drive_c/windows/mono/mono-2.0/bin/libmono-2.0-x86.dll" ]; then
-        ok "wine-mono im Prefix"; else bad "wine-mono fehlt im Prefix $WINEPREFIX"; fi
+        ok "wine-mono in prefix"; else bad "wine-mono is missing in prefix $WINEPREFIX"; fi
     if [ -f "$TB_DIR/DL.exe" ]; then
         ok "tempbase 2: $TB_DIR/DL.exe"
         if [ -f "$SHIM_DIR/patch-dl.py" ]; then
             local tmp out rc; tmp=$(mktemp); cp "$TB_DIR/DL.exe" "$tmp"
             out=$(python3 "$SHIM_DIR/patch-dl.py" "$tmp" 2>&1) && rc=0 || rc=$?
             rm -f "$tmp" "$tmp.orig"
-            if [ "$rc" = 0 ] && [ "$out" = "bereits gepatcht" ]; then ok "USB-Patch in DL.exe ist aktiv"
-            elif [ "$rc" = 0 ]; then hin "DL.exe ist noch nicht gepatcht; der Starter holt das beim naechsten Start nach"
-            else bad "USB-Patch nicht anwendbar: $out"; fi
-        else bad "patch-dl.py fehlt in $SHIM_DIR"; fi
-    else bad "tempbase 2 nicht gefunden ($TB_DIR/DL.exe)"; fi
-    if [ -s "$SHIM_DIR/hidraw-delay.so" ]; then ok "HID-Shim gebaut"; else bad "HID-Shim fehlt"; fi
-    if [ -x "$SHIM_DIR/tempbase-start.sh" ]; then ok "Programmstarter vorhanden"; else bad "Programmstarter fehlt"; fi
+            if [ "$rc" = 0 ] && [ "$out" = "already patched" ]; then ok "USB patch in DL.exe is active"
+            elif [ "$rc" = 0 ]; then note "DL.exe is not patched yet; the launcher will do this on the next start"
+            else bad "USB patch cannot be applied: $out"; fi
+        else bad "patch-dl.py is missing in $SHIM_DIR"; fi
+    else bad "tempbase 2 not found ($TB_DIR/DL.exe)"; fi
+    if [ -s "$SHIM_DIR/hidraw-delay.so" ]; then ok "HID shim built"; else bad "HID shim is missing"; fi
+    if [ -x "$SHIM_DIR/tempbase-start.sh" ]; then ok "launcher present"; else bad "launcher is missing"; fi
     local n=0 z
     while IFS= read -r z; do
         [ -n "$z" ] || continue
-        if grep -q "tempbase-start.sh" "$z"; then n=$((n+1)); else bad "Menue-Eintrag ohne Starter: $z"; fi
-    done < <(find "$APPS_DIR" -iname "*tempbase*.desktop" 2>/dev/null | grep -vi -e entfernen -e uninstall -e remove -e deinstall || true)
-    if [ "$n" -gt 0 ]; then ok "Startmenue-Eintraege ($n) nutzen den Starter"; else bad "kein Startmenue-Eintrag mit Starter"; fi
+        if grep -q "tempbase-start.sh" "$z"; then n=$((n+1)); else bad "Menu entry without launcher: $z"; fi
+    done < <(find "$APPS_DIR" -iname "*tempbase*.desktop" 2>/dev/null | grep -vi "${UNINSTALL_FILTER[@]}" || true)
+    if [ "$n" -gt 0 ]; then ok "Start Menu entries ($n) use the launcher"; else bad "no Start Menu entry with launcher"; fi
     local d=0
     while IFS= read -r z; do
         [ -n "$z" ] || continue
-        if grep -q "tempbase-start.sh" "$z"; then d=$((d+1)); else bad "Schreibtisch-Symbol ohne Starter (zeigt auf ungepatchtes tempbase): $z"; fi
-    done < <(find "$DESKTOP_DIR" -maxdepth 1 -iname "*tempbase*.desktop" 2>/dev/null | grep -vi -e entfernen -e uninstall -e remove -e deinstall || true)
-    [ "$d" -gt 0 ] && ok "Schreibtisch-Symbol ($d) nutzt den Starter"
-    if [ -f "$UDEV_RULE" ]; then ok "udev-Regel vorhanden"; else bad "udev-Regel fehlt ($UDEV_RULE)"; fi
-    if id -nG "${USER:-$(id -un)}" | grep -qw plugdev; then ok "Benutzer ist in Gruppe plugdev"
-    else bad "Benutzer nicht in Gruppe plugdev (nach Aenderung: neu anmelden)"; fi
+        if grep -q "tempbase-start.sh" "$z"; then d=$((d+1)); else bad "Desktop icon without launcher (points to unpatched tempbase): $z"; fi
+    done < <(find "$DESKTOP_DIR" -maxdepth 1 -iname "*tempbase*.desktop" 2>/dev/null | grep -vi "${UNINSTALL_FILTER[@]}" || true)
+    [ "$d" -gt 0 ] && ok "Desktop icons ($d) use the launcher"
+    if [ -f "$UDEV_RULE" ]; then ok "udev rule present"; else bad "udev rule is missing ($UDEV_RULE)"; fi
+    if id -nG "${USER:-$(id -un)}" | grep -qw plugdev; then ok "user is in group plugdev"
+    else bad "user is not in group plugdev (after changing this: log out and back in)"; fi
     local h found=0
     for h in /sys/class/hidraw/hidraw*; do
         [ -e "$h" ] || continue
         if readlink -f "$h/device" | grep -qi "0003:0*${TEMPMATE_VID}:0*${TEMPMATE_PID}"; then
             found=1; local node="/dev/$(basename "$h")"
-            if [ -r "$node" ] && [ -w "$node" ]; then ok "Logger eingesteckt, Zugriff auf $node moeglich"
-            else bad "Logger gefunden ($node), aber kein Zugriff (Gruppe/udev/neu einstecken)"; fi
+            if [ -r "$node" ] && [ -w "$node" ]; then ok "logger plugged in, $node is accessible"
+            else bad "logger found ($node), but no access (group/udev/replug)"; fi
         fi
     done
-    [ "$found" = 1 ] || hin "Kein TempMate-Logger eingesteckt (nicht pruefbar)"
+    [ "$found" = 1 ] || note "No TempMate logger plugged in (cannot check)"
     echo
-    if [ "$fail" = 0 ]; then echo "Ergebnis: alles in Ordnung."; else echo "Ergebnis: es gibt offene Punkte (siehe oben)."; fi
+    if [ "$fail" = 0 ]; then echo "Result: everything is fine."; else echo "Result: there are open issues (see above)."; fi
     return "$fail"
 }
 
-if [ "$NUR_PRUEFEN" = 1 ]; then pruefen; exit $?; fi
+if [ "$CHECK_ONLY" = 1 ]; then check_install; exit $?; fi
 
-# ------------------------------------------------------------------- Vorpruefungen
-[ "$(id -u)" != 0 ] || die "Bitte NICHT als root starten (das Skript fragt bei Bedarf per sudo)."
+# ------------------------------------------------------------------- Pre-checks
+[ "$(id -u)" != 0 ] || die "Please do NOT run as root (the script uses sudo when needed)."
 if [ -z "$INSTALLER" ] && [ ! -f "$TB_DIR/DL.exe" ]; then
-    echo "Aufruf: $0 [--ja] [--ohne-apt] \"/pfad/zur/tempbase-installer.exe\"" >&2
-    echo "(Die Installationsdatei ist nur beim allerersten Mal noetig; tempbase 2 ist unter" >&2
-    echo " $WINEPREFIX noch nicht installiert.)" >&2
+    echo "Usage: $0 [--yes] [--no-apt] \"/path/to/tempbase-installer.exe\"" >&2
+    echo "(The installer file is only needed the very first time; tempbase 2 is not yet" >&2
+    echo " installed in $WINEPREFIX.)" >&2
     exit 1
 fi
 if [ -n "$INSTALLER" ]; then
-    [ -f "$INSTALLER" ] || die "Installationsdatei nicht gefunden: $INSTALLER"
-    [ "$(head -c 2 "$INSTALLER")" = "MZ" ] || die "Das ist keine Windows-Programmdatei (.exe): $INSTALLER"
+    [ -f "$INSTALLER" ] || die "Installer file not found: $INSTALLER"
+    [ "$(head -c 2 "$INSTALLER")" = "MZ" ] || die "This is not a Windows executable (.exe): $INSTALLER"
     INSTALLER="$(readlink -f "$INSTALLER")"
 elif [ -f "$TB_DIR/DL.exe" ]; then
-    info "Keine Installationsdatei angegeben, tempbase 2 ist bereits installiert - repariere nur"
-    info "(USB-Patch, HID-Shim, Programmstarter, Menue-/Schreibtisch-Eintraege)."
+    info "No installer file given, tempbase 2 is already installed - repairing only"
+    info "(USB patch, HID shim, launcher, menu/desktop entries)."
 fi
 if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
-    warn "Keine grafische Sitzung erkannt (DISPLAY leer). Die Installation braucht eine."
+    warn "No graphical session detected (DISPLAY is empty). The installation needs one."
 fi
 
-# ------------------------------------------------- 1. Systempakete und WineHQ
-if [ "$OHNE_APT" = 1 ]; then
-    info "1/6: Systempakete uebersprungen (--ohne-apt)"
-    [ -x "$WINE" ] || die "$WINE fehlt. Ohne --ohne-apt erneut starten."
+# ------------------------------------------------- 1. System packages and WineHQ
+if [ "$NO_APT" = 1 ]; then
+    info "1/6: System packages skipped (--no-apt)"
+    [ -x "$WINE" ] || die "$WINE is missing. Run again without --no-apt."
 else
-    command -v apt >/dev/null 2>&1 || die "Nur fuer Debian/Ubuntu/Linux Mint (apt) gedacht."
+    command -v apt >/dev/null 2>&1 || die "Only intended for Debian/Ubuntu/Linux Mint (apt)."
     . /etc/os-release
     CODENAME="${UBUNTU_CODENAME:-}"
     [ -n "$CODENAME" ] || { [ "${ID:-}" = ubuntu ] && CODENAME="${VERSION_CODENAME:-}"; }
-    [ -n "$CODENAME" ] || die "Ubuntu-Codename nicht ermittelbar (/etc/os-release). Siehe https://wiki.winehq.org/Ubuntu"
+    [ -n "$CODENAME" ] || die "Cannot determine Ubuntu codename (/etc/os-release). See https://wiki.winehq.org/Ubuntu"
 
-    info "1/6: Systempakete (i386, winbind, Werkzeuge) und WineHQ-Repository (Codename: $CODENAME)"
+    info "1/6: System packages (i386, winbind, tools) and WineHQ repository (codename: $CODENAME)"
     sudo dpkg --add-architecture i386
     sudo apt update
     sudo apt install -y winbind wget ca-certificates gnupg python3 build-essential
@@ -223,51 +222,51 @@ else
     sudo wget -qO /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
     sudo wget -qNP /etc/apt/sources.list.d/ \
         "https://dl.winehq.org/wine-builds/ubuntu/dists/${CODENAME}/winehq-${CODENAME}.sources" \
-        || die "Kein WineHQ-Repository fuer '$CODENAME' gefunden."
+        || die "No WineHQ repository found for '$CODENAME'."
     sudo apt update
     if [ -x "$WINE" ]; then
-        echo "    wine-devel ist bereits installiert."
+        echo "    wine-devel is already installed."
     else
         sudo apt install -y --install-recommends winehq-devel
     fi
-    sudo apt install -y libegl1:i386 libegl-mesa0:i386 || warn "32-Bit-EGL-Bibliotheken nicht installierbar (meist unkritisch)."
-    [ -x "$WINE" ] || die "$WINE fehlt nach der Installation von winehq-devel."
+    sudo apt install -y libegl1:i386 libegl-mesa0:i386 || warn "Could not install 32-bit EGL libraries (usually harmless)."
+    [ -x "$WINE" ] || die "$WINE is missing after installing winehq-devel."
 
-    info "2/6: USB-Zugriff fuer den TempMate-Logger (udev-Regel, Gruppe plugdev)"
+    info "2/6: USB access for the TempMate logger (udev rule, group plugdev)"
     RULE_LINE="SUBSYSTEM==\"hidraw\", ATTRS{idVendor}==\"${TEMPMATE_VID}\", ATTRS{idProduct}==\"${TEMPMATE_PID}\", MODE=\"0660\", GROUP=\"plugdev\", TAG+=\"uaccess\""
     if [ -f "$UDEV_RULE" ] && grep -qF "$RULE_LINE" "$UDEV_RULE"; then
-        echo "    Regel existiert bereits."
+        echo "    Rule already exists."
     else
         echo "$RULE_LINE" | sudo tee "$UDEV_RULE" >/dev/null
         sudo udevadm control --reload-rules
         sudo udevadm trigger --subsystem-match=hidraw
-        echo "    Regel installiert."
+        echo "    Rule installed."
     fi
     if id -nG "$USER" | grep -qw plugdev; then
-        echo "    $USER ist bereits in der Gruppe plugdev."
+        echo "    $USER is already in group plugdev."
     else
         sudo usermod -aG plugdev "$USER"
-        NEUANMELDEN=1
-        echo "    $USER zur Gruppe plugdev hinzugefuegt (Neuanmeldung noetig, siehe Ende)."
+        NEED_RELOGIN=1
+        echo "    Added $USER to group plugdev (you need to log in again, see the end)."
     fi
 fi
-command -v python3 >/dev/null 2>&1 || die "python3 fehlt."
+command -v python3 >/dev/null 2>&1 || die "python3 is missing."
 
-# ------------------------------------------------------ 3. Prefix und Mono
+# ------------------------------------------------------ 3. Prefix and Mono
 if [ -f "$TB_DIR/DL.exe" ]; then
-    info "3/6 + 4/6: tempbase 2 ist im Prefix $WINEPREFIX bereits installiert; ueberspringe Prefix und Setup"
+    info "3/6 + 4/6: tempbase 2 is already installed in prefix $WINEPREFIX; skipping prefix and setup"
 else
-    info "3/6: Wine-Prefix anlegen: $WINEPREFIX"
+    info "3/6: Creating Wine prefix: $WINEPREFIX"
     "$WINESERVER" -k 2>/dev/null || true
     if [ -e "$WINEPREFIX" ]; then
         BACKUP="${WINEPREFIX}-backup-$(date +%Y%m%d-%H%M%S)"
-        echo "    Ein Prefix existiert bereits (ohne tempbase 2)."
-        frage "    Nach $BACKUP verschieben und einen frischen Prefix anlegen?" || die "Abgebrochen. Mit anderem WINEPREFIX erneut versuchen."
+        echo "    A prefix already exists (without tempbase 2)."
+        ask "    Move it to $BACKUP and create a fresh prefix?" || die "Aborted. Try again with a different WINEPREFIX."
         mv "$WINEPREFIX" "$BACKUP"
-        echo "    Gesichert nach: $BACKUP"
+        echo "    Backed up to: $BACKUP"
     fi
 
-    # Wine-Mono: Version steht in appwiz.cpl; vorab laden, damit Wine keinen Dialog zeigt
+    # Wine Mono: the version is stored in appwiz.cpl; download it beforehand so that Wine shows no dialog
     MONO_MSI=$(python3 - <<'PYX' 2>/dev/null || true
 import re
 try:
@@ -283,46 +282,46 @@ PYX
         MONO_VER="${MONO_MSI#wine-mono-}"; MONO_VER="${MONO_VER%-x86.msi}"
         mkdir -p "$MONO_CACHE"
         if [ ! -s "$MONO_CACHE/$MONO_MSI" ]; then
-            echo "    Lade $MONO_MSI ..."
+            echo "    Downloading $MONO_MSI ..."
             wget -q -O "$MONO_CACHE/$MONO_MSI.part" "https://dl.winehq.org/wine/wine-mono/$MONO_VER/$MONO_MSI" \
                 && mv "$MONO_CACHE/$MONO_MSI.part" "$MONO_CACHE/$MONO_MSI" \
-                || { rm -f "$MONO_CACHE/$MONO_MSI.part"; warn "Mono-Download fehlgeschlagen."; MONO_MSI=""; }
+                || { rm -f "$MONO_CACHE/$MONO_MSI.part"; warn "Mono download failed."; MONO_MSI=""; }
         fi
     else
-        warn "Mono-Version nicht ermittelbar."
+        warn "Cannot determine the Mono version."
     fi
 
-    # Mono/Gecko-Dialoge unterdruecken, Mono danach gezielt still installieren
+    # Suppress Mono/Gecko dialogs, then install Mono silently
     env WINEARCH=win64 WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" "$WINE" wineboot --init 2>&1 | grep -v -e MESA -e ELFCLASS || true
     "$WINESERVER" -w
     if [ -n "$MONO_MSI" ] && [ -s "$MONO_CACHE/$MONO_MSI" ]; then
-        echo "    Installiere Wine Mono $MONO_VER ..."
+        echo "    Installing Wine Mono $MONO_VER ..."
         env WINEDEBUG=-all "$WINE" msiexec /i "$(env WINEDEBUG=-all "$WINE" winepath -w "$MONO_CACHE/$MONO_MSI" 2>/dev/null | tr -d '\r')" /qn 2>&1 | grep -v -e MESA -e ELFCLASS || true
         "$WINESERVER" -w
     fi
     [ -f "$WINEPREFIX/drive_c/windows/mono/mono-2.0/bin/libmono-2.0-x86.dll" ] \
-        || warn "Wine Mono fehlt im Prefix. Beim ersten Start ggf. den Mono-Dialog mit 'Installieren' bestaetigen."
+        || warn "Wine Mono is missing in the prefix. On first start, confirm the Mono dialog with 'Install' if it appears."
 
-    info "4/6: tempbase 2 installieren (still)"
+    info "4/6: Installing tempbase 2 (silently)"
     env WINEDEBUG=-all "$WINE" "$INSTALLER" /SILENT /SUPPRESSMSGBOXES /NORESTART 2>&1 | grep -v -e MESA -e ELFCLASS || true
     "$WINESERVER" -w
     if [ ! -f "$TB_DIR/DL.exe" ]; then
         FOUND=$(find "$WINEPREFIX/drive_c" -maxdepth 4 -name DL.exe 2>/dev/null | head -1 || true)
-        die "DL.exe nicht unter $TB_DIR gefunden${FOUND:+ (gefunden: $FOUND; der USB-Fix erwartet 'C:\\tempbase 2')}. Installation fehlgeschlagen?"
+        die "DL.exe not found in $TB_DIR${FOUND:+ (found: $FOUND; the USB fix expects 'C:\\tempbase 2')}. Did the installation fail?"
     fi
-    echo "    tempbase 2 installiert: $TB_DIR"
+    echo "    tempbase 2 installed: $TB_DIR"
 fi
 
-# ---------------------------------------------------------- 5. USB-Fix
-info "5/6: USB-Fix (DL.exe-Patch, HID-Shim, Starter, Menue-Eintraege)"
+# ---------------------------------------------------------- 5. USB fix
+info "5/6: USB fix (DL.exe patch, HID shim, launcher, menu entries)"
 mkdir -p "$SHIM_DIR"
 
 cat > "$SHIM_DIR/patch-dl.py" <<'PYEOF'
 #!/usr/bin/env python3
-"""Entfernt FILE_FLAG_OVERLAPPED aus tempbase 2 (DL.exe), siehe fix-tempbase-wine-usb.sh.
+"""Removes FILE_FLAG_OVERLAPPED from tempbase 2 (DL.exe), see install-tempbase-wine.sh.
 
-Exit-Codes: 0 = gepatcht oder bereits gepatcht, 2 = Muster nicht (genau einmal) gefunden,
-            1 = Datei fehlt/Fehler. Bei Exit-Code != 0 wird nichts veraendert.
+Exit codes: 0 = patched or already patched, 2 = pattern not found (exactly once),
+            1 = file missing/error. With exit code != 0 nothing is changed.
 """
 import os, re, shutil, sys
 
@@ -333,27 +332,27 @@ PAT_DONE = rb"\x20\x00\x00\x00\xc0\x19\x7e....\x19\x16\x00\x00\x00\x00\x16\x28"
 
 def main():
     if len(sys.argv) != 2:
-        print("Aufruf: patch-dl.py <DL.exe>", file=sys.stderr); return 1
+        print("Usage: patch-dl.py <DL.exe>", file=sys.stderr); return 1
     p = sys.argv[1]
     try:
         d = bytearray(open(p, "rb").read())
     except OSError as e:
-        print("DL.exe nicht lesbar: %s" % e, file=sys.stderr); return 1
+        print("Cannot read DL.exe: %s" % e, file=sys.stderr); return 1
     if re.search(PAT_DONE, bytes(d), re.S):
-        print("bereits gepatcht"); return 0
+        print("already patched"); return 0
     ms = list(re.finditer(PAT, bytes(d), re.S))
     if len(ms) != 1:
-        print("Muster in DL.exe %d mal gefunden (erwartet: 1). Vermutlich andere "
-              "tempbase-Version; nichts geaendert." % len(ms), file=sys.stderr)
+        print("pattern found %d times in DL.exe (expected: 1). Probably a different "
+              "tempbase version; nothing changed." % len(ms), file=sys.stderr)
         return 2
     try:
-        shutil.copy2(p, p + ".orig")          # aktuelle, ungepatchte Version sichern
+        shutil.copy2(p, p + ".orig")          # back up the current, unpatched version
         o = ms[0].start() + 12
         d[o:o + 5] = b"\x16\x00\x00\x00\x00"  # ldc.i4.0 + 4x nop
         open(p, "wb").write(d)
     except OSError as e:
-        print("Schreiben fehlgeschlagen: %s" % e, file=sys.stderr); return 1
-    print("gepatcht (Offset 0x%x), Original: %s.orig" % (o, p))
+        print("Write failed: %s" % e, file=sys.stderr); return 1
+    print("patched (offset 0x%x), original: %s.orig" % (o, p))
     return 0
 
 if __name__ == "__main__":
@@ -361,16 +360,16 @@ if __name__ == "__main__":
 PYEOF
 chmod +x "$SHIM_DIR/patch-dl.py"
 python3 "$SHIM_DIR/patch-dl.py" "$TB_DIR/DL.exe" | sed 's/^/    DL.exe: /' \
-    || warn "DL.exe konnte nicht gepatcht werden (andere tempbase-Version?). Siehe $SHIM_DIR/start.log nach dem ersten Start."
+    || warn "Could not patch DL.exe (different tempbase version?). See $SHIM_DIR/start.log after the first start."
 
 cat > "$SHIM_DIR/hidraw-delay.c" <<'CEOF'
 /*
- * LD_PRELOAD-Shim fuer tempbase 2 unter Wine.
- * Der TempMate-Logger (USB 04d8:0015) beantwortet Anfragen nicht, wenn sie zu
- * dicht aufeinander folgen (tempbase sendet alle 80 ms). Dieser Shim haelt bei
- * write() auf /dev/hidraw* mindestens TEMPBASE_HID_DELAY_MS (Standard 300)
- * Abstand zwischen zwei Schreibzugriffen ein. Mit TEMPBASE_HID_ALL=1 gilt das
- * fuer jede Anfrage; ohne nur nach Anfragen fuer Speicherblock 0x60.
+ * LD_PRELOAD shim for tempbase 2 under Wine.
+ * The TempMate logger (USB 04d8:0015) does not answer requests that follow each
+ * other too closely (tempbase sends every 80 ms). On write() to /dev/hidraw*, this
+ * shim keeps at least TEMPBASE_HID_DELAY_MS (default 300) between two writes.
+ * With TEMPBASE_HID_ALL=1 this applies to every request; without it only after
+ * requests for memory block 0x60.
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -440,13 +439,13 @@ ssize_t write(int fd, const void *buf, size_t count)
     return r;
 }
 CEOF
-command -v gcc >/dev/null 2>&1 || die "gcc fehlt (build-essential installieren oder ohne --ohne-apt starten)."
+command -v gcc >/dev/null 2>&1 || die "gcc is missing (install build-essential or run without --no-apt)."
 gcc -O2 -shared -fPIC -o "$SHIM_DIR/hidraw-delay.so" "$SHIM_DIR/hidraw-delay.c" -ldl -lpthread
-echo "    HID-Shim gebaut: $SHIM_DIR/hidraw-delay.so"
+echo "    HID shim built: $SHIM_DIR/hidraw-delay.so"
 
 cat > "$SHIM_DIR/tempbase-start.sh" <<'SHEOF'
 #!/usr/bin/env bash
-# Starter fuer tempbase 2 unter Wine: prueft/patcht DL.exe, setzt den HID-Shim, startet tempbase.
+# Launcher for tempbase 2 under Wine: checks/patches DL.exe, sets up the HID shim, starts tempbase.
 DIR="$(dirname "$(readlink -f "$0")")"
 export WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
 export LD_PRELOAD="$DIR/hidraw-delay.so"
@@ -458,7 +457,7 @@ out=$(python3 "$DIR/patch-dl.py" "$WINEPREFIX/drive_c/tempbase 2/DL.exe" 2>&1)
 rc=$?
 echo "$(date '+%F %T') patch-dl rc=$rc: $out" >> "$LOG"
 if [ "$rc" -ne 0 ]; then
-    msg="tempbase 2: Der USB-Fix konnte nicht angewendet werden ($out). Vermutlich wurde tempbase aktualisiert. \"Device disconnected\" ist dann wahrscheinlich. Anleitung fuer eine Claude-Sitzung: $DIR/REPARATUR.md (Protokoll: $LOG)."
+    msg="tempbase 2: The USB fix could not be applied ($out). tempbase was probably updated. \"Device disconnected\" is then likely. Instructions for a Claude session: $DIR/REPAIR.md (log: $LOG)."
     if command -v notify-send >/dev/null 2>&1; then notify-send -u critical "tempbase 2" "$msg"
     elif command -v zenity >/dev/null 2>&1; then zenity --warning --text="$msg" &
     else echo "$msg" >&2; fi
@@ -467,222 +466,226 @@ exec "$WINE" "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\tempbas
 SHEOF
 chmod +x "$SHIM_DIR/tempbase-start.sh"
 
-cat > "$SHIM_DIR/REPARATUR.md" <<'MDEOF'
-# tempbase 2 unter Wine: USB-Patch schlaegt fehl - Anleitung fuer eine Claude-Sitzung
+rm -f "$SHIM_DIR/REPARATUR.md"   # former (German) name of REPAIR.md
+cat > "$SHIM_DIR/REPAIR.md" <<'MDEOF'
+# tempbase 2 under Wine: USB patch fails - instructions for a Claude session
 
-Diese Datei ist ein Prompt/Uebergabe-Text. Sie liegt in `<XDG_DATA_HOME>/tempbase-shim/REPARATUR.md`
-(Standard `~/.local/share/tempbase-shim/`). Der Benutzer gibt sie einer neuen Claude-Code-Sitzung.
-Kommuniziert wird auf Deutsch.
+This file is a prompt/handover text. It lives in `<XDG_DATA_HOME>/tempbase-shim/REPAIR.md`
+(default `~/.local/share/tempbase-shim/`). The user hands it to a new Claude Code session.
+Communicate with the user in their own language.
 
-## Ausgangslage
+## Situation
 
-tempbase 2 (.NET-Programm `DL.exe`, Hersteller TempMate) wird per `install-tempbase-wine.sh`
-unter Wine (wine-devel, `/opt/wine-devel`) betrieben. Der Programmstarter
-`tempbase-start.sh` ruft bei jedem Start `patch-dl.py` auf. Das Patch-Werkzeug hat das
-Byte-Muster in `DL.exe` nicht (genau einmal) gefunden. Vermutlich hat sich tempbase per
-Selbstupdate (`setup.exe`) auf eine neue Version aktualisiert. Ohne Patch zeigt tempbase bei jedem
-Klick "Device disconnected", der Download-Knopf tut nichts.
+tempbase 2 (.NET program `DL.exe`, vendor TempMate) is run under Wine (wine-devel, `/opt/wine-devel`)
+via `install-tempbase-wine.sh`. The launcher `tempbase-start.sh` calls `patch-dl.py` on every start.
+The patch tool did not find the byte pattern in `DL.exe` (exactly once). Most likely tempbase updated
+itself to a new version via its self-update (`setup.exe`). Without the patch, tempbase shows
+"Device disconnected" on every click and the download button does nothing.
 
-Zuerst pruefen (alles im Ordner `~/.local/share/tempbase-shim/`):
-- `start.log`: letzte Zeilen, dort steht "patch-dl rc=2: Muster ... N mal gefunden".
-- `~/.wine/drive_c/tempbase 2/DL.exe` (die neue, ungepatchte Version) und ihre Version
+Check first (everything in the folder `~/.local/share/tempbase-shim/`):
+- `start.log`: the last lines say "patch-dl rc=2: pattern found N times in DL.exe ...".
+- `~/.wine/drive_c/tempbase 2/DL.exe` (the new, unpatched version) and its version
   (`strings -e l DL.exe | grep -i "3\.[0-9]\.[0-9]"`).
-- `install-tempbase-wine.sh --pruefen` fuer den Gesamtzustand.
+- `install-tempbase-wine.sh --check` for the overall state.
 
-## Die Ursache (nicht neu untersuchen)
+## The cause (do not investigate again)
 
-Bereits gesichert, bitte nicht erneut ermitteln:
-- `hid.OpenDevice()` in DL.exe oeffnet das Geraet mit
-  `Kernel32.CreateFile(pfad, 0xC0000000, 3, IntPtr.Zero, 3, 0x40000000 /*FILE_FLAG_OVERLAPPED*/, 0)`
-  und packt das Handle in `new FileStream(handle, FileAccess.ReadWrite, 4096, true)`.
-- Wine Mono liest darauf synchron. Ist die Antwort noch nicht da, gibt es
-  `IOException: Win32 IO returned 997` (ERROR_IO_PENDING) in `ReadCompleted`. tempbase faengt sie still ab
-  und setzt `hid.deviceOpened = false`. Danach werden von den 31 Parameter-Paketen des Verbindungsaufbaus
-  (`UsbCommand.GetParameter`, 80 ms Pause dazwischen) nur 4 gesendet. `CUSB.connect` scheitert, der Flag
-  `deviceConnected` bleibt falsch, jeder Klick zeigt die Meldung "未连接设备" ("kein Geraet verbunden").
-- Der Fix besteht aus zwei Teilen, beide sind noetig:
-  1. `DL.exe`-Patch: die Konstante 0x40000000 (FILE_FLAG_OVERLAPPED) beim CreateFile-Aufruf durch 0
-     ersetzen (IL `20 00 00 00 40` -> `16 00 00 00 00`, also `ldc.i4.0` + 4x `nop`).
-  2. LD_PRELOAD-Shim `hidraw-delay.so` (Quelltext `hidraw-delay.c`): haelt 300 ms Abstand zwischen
-     write()-Aufrufen auf `/dev/hidraw*`, weil der TempMate-Logger (USB 04d8:0015) dichter aufeinander
-     folgende Anfragen nicht beantwortet (Block 0x60 braucht ca. 250 ms). Der Shim ist unabhaengig von der
-     tempbase-Version und muss normalerweise nicht angefasst werden.
-- Nicht ursaechlich (bereits ausgeschlossen): Wine-Version 11.17/11.18, Mono 10.4.1 vs. 11.3.0, USB-Port,
-  Kabel, CPU-Geschwindigkeit, udev-Rechte, hidraw/Kernel. Der Logger und Wines hid-Schicht sind in Ordnung.
+Already established, please do not re-investigate:
+- `hid.OpenDevice()` in DL.exe opens the device with
+  `Kernel32.CreateFile(path, 0xC0000000, 3, IntPtr.Zero, 3, 0x40000000 /*FILE_FLAG_OVERLAPPED*/, 0)`
+  and wraps the handle in `new FileStream(handle, FileAccess.ReadWrite, 4096, true)`.
+- Wine Mono reads from it synchronously. If the response has not arrived yet, this results in
+  `IOException: Win32 IO returned 997` (ERROR_IO_PENDING) in `ReadCompleted`. tempbase silently catches it
+  and sets `hid.deviceOpened = false`. After that, only 4 of the 31 parameter packets of the connection
+  setup (`UsbCommand.GetParameter`, 80 ms pause in between) are sent. `CUSB.connect` fails, the flag
+  `deviceConnected` stays false, and every click shows the message "未连接设备" ("no device connected").
+- The fix consists of two parts, both are required:
+  1. `DL.exe` patch: replace the constant 0x40000000 (FILE_FLAG_OVERLAPPED) in the CreateFile call with 0
+     (IL `20 00 00 00 40` -> `16 00 00 00 00`, i.e. `ldc.i4.0` + 4x `nop`).
+  2. LD_PRELOAD shim `hidraw-delay.so` (source `hidraw-delay.c`): keeps 300 ms spacing between
+     write() calls on `/dev/hidraw*`, because the TempMate logger (USB 04d8:0015) does not answer requests
+     that follow each other more closely (block 0x60 takes about 250 ms). The shim does not depend on the
+     tempbase version and normally does not need to be touched.
+- Not the cause (already ruled out): Wine version 11.17/11.18, Mono 10.4.1 vs. 11.3.0, USB port,
+  cable, CPU speed, udev permissions, hidraw/kernel. The logger and Wine's hid layer are fine.
 
-Das Byte-Muster in `patch-dl.py` (Konstanten `PAT` / `PAT_DONE`):
+The byte pattern in `patch-dl.py` (constants `PAT` / `PAT_DONE`):
 ```
 20 00 00 00 c0   ldc.i4 0xC0000000        (GENERIC_READ|WRITE)
-19               ldc.i4.3                 (Share-Modus)
+19               ldc.i4.3                 (share mode)
 7e ?? ?? ?? ??   ldsfld IntPtr.Zero
 19               ldc.i4.3                 (OPEN_EXISTING)
-20 00 00 00 40   ldc.i4 0x40000000        (FILE_FLAG_OVERLAPPED)  -> soll 16 00 00 00 00 werden
+20 00 00 00 40   ldc.i4 0x40000000        (FILE_FLAG_OVERLAPPED)  -> should become 16 00 00 00 00
 16               ldc.i4.0
 28               call CreateFile
 ```
 
-## Vorgehen bei einer neuen tempbase-Version
+## Procedure for a new tempbase version
 
-1. **Neuen Quelltext beschaffen.** Auf Linux gibt es keinen .NET-Decompiler. Der Benutzer muss auf einem
-   Windows-Rechner `DL.exe` (die aktuelle, ungepatchte Version: `DL.exe` oder `DL.exe.orig`, je nach
-   Zustand) in **dnSpy** oeffnen und mit "Datei -> Export to Project..." nach z.B. `~/.klaus/decomp-neu`
-   exportieren (Ordner zippen und uebergeben). Die Klassen liegen unter `tempbase2/Devices/Usb/`
-   (`hid.cs`, `UsbCommand.cs`, `DataFactory.cs`) und `tempbase2/Monitor/CUSB.cs`.
-   Der Export der Version 3.1.2 liegt zum Vergleich noch unter `~/.klaus/decomp` (falls vorhanden).
-   Herstellercode: nicht weitergeben, nicht in oeffentliche Berichte kopieren.
-2. **Stelle wiederfinden:** `grep -n "CreateFile\|1073741824\|FILE_FLAG_OVERLAPPED" hid.cs`. Gesucht wird
-   der `CreateFile`-Aufruf fuer `ReadHandle` in `OpenDevice` mit dem Flag 1073741824.
-   - Ist der Aufruf **unveraendert**, aber das Byte-Muster passt nicht (anderer Compiler, anderes Register):
-     im neuen `DL.exe` mit Python nach `20 00 00 00 40` in der Naehe eines `call` suchen (Kontext um den
-     Treffer ausgeben) und `PAT`/`PAT_DONE` in `patch-dl.py` entsprechend anpassen. Immer genau **einen**
-     Treffer erzwingen (das Skript verweigert sonst absichtlich den Patch).
-   - Hat der Hersteller die HID-Schicht **umgebaut** (andere Klasse, HidSharp, async/await, Overlapped mit
-     eigener Struktur): den neuen Lesepfad verstehen (`BeginRead`/`ReadCompleted`/`Write` in `hid.cs`) und
-     pruefen, ob der Fehler dort noch entsteht. Gegebenenfalls einen anderen Patchpunkt waehlen.
-   - Hat der Hersteller den Fehler **behoben** (kein OVERLAPPED mehr): dann ist kein Patch noetig. Trotzdem
-     mit Schritt 4 pruefen, ob der Shim allein reicht.
-3. **Patch an einer Kopie testen** (nie zuerst am echten Prefix): `patch-dl.py` auf eine Kopie von `DL.exe`
-   anwenden, Ergebnis mit `cmp -l` gegen das Original pruefen (es duerfen nur die 5 Bytes abweichen).
-   Besser: Kopie des Prefix anlegen (`cp -a ~/.wine ~/.wine-test`) und dort testen, alles ueber
-   `WINEPREFIX=~/.wine-test`. Vor Aenderungen am echten `~/.wine` den Benutzer fragen.
-4. **Funktionstest** (Logger muss eingesteckt sein, kein tempbase in derselben Sitzung offen):
+1. **Obtain the new source code.** There is no .NET decompiler on Linux. On a Windows machine, the user
+   has to open `DL.exe` (the current, unpatched version: `DL.exe` or `DL.exe.orig`, depending on the
+   state) in **dnSpy** and export it via "File -> Export to Project..." to e.g. `decomp-new/`
+   (zip the folder and hand it over). The classes are under `tempbase2/Devices/Usb/`
+   (`hid.cs`, `UsbCommand.cs`, `DataFactory.cs`) and `tempbase2/Monitor/CUSB.cs`.
+   An export of version 3.1.2 may still be available for comparison in `decomp/` of the repository
+   checkout (git-ignored, if present).
+   Vendor code: do not pass it on, do not copy it into public reports or commit it.
+2. **Find the spot again:** `grep -n "CreateFile\|1073741824\|FILE_FLAG_OVERLAPPED" hid.cs`. You are looking
+   for the `CreateFile` call for `ReadHandle` in `OpenDevice` with the flag 1073741824.
+   - If the call is **unchanged** but the byte pattern does not match (different compiler, different register):
+     search the new `DL.exe` with Python for `20 00 00 00 40` near a `call` (print the context around the
+     match) and adjust `PAT`/`PAT_DONE` in `patch-dl.py` accordingly. Always enforce exactly **one**
+     match (otherwise the script deliberately refuses to patch).
+   - If the vendor has **rebuilt** the HID layer (different class, HidSharp, async/await, Overlapped with
+     its own structure): understand the new read path (`BeginRead`/`ReadCompleted`/`Write` in `hid.cs`) and
+     check whether the error still occurs there. If necessary, choose a different patch point.
+   - If the vendor has **fixed** the bug (no more OVERLAPPED): then no patch is needed. Still check
+     with step 4 whether the shim alone is sufficient.
+3. **Test the patch on a copy** (never on the real prefix first): apply `patch-dl.py` to a copy of `DL.exe`,
+   compare the result against the original with `cmp -l` (only the 5 bytes may differ).
+   Better: create a copy of the prefix (`cp -a ~/.wine ~/.wine-test`) and test there, everything via
+   `WINEPREFIX=~/.wine-test`. Ask the user before making changes to the real `~/.wine`.
+4. **Functional test** (logger must be plugged in, no tempbase open in the same session):
    ```
    WINEPREFIX=<prefix> WINEDEBUG=+hid,+timestamp TEMPBASE_HID_ALL=1 \
      LD_PRELOAD=~/.local/share/tempbase-shim/hidraw-delay.so \
      /opt/wine-devel/bin/wine "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\tempbase 2\tempbase 2.lnk" \
      > test.log 2>&1
    ```
-   Nach ca. 60 s beenden (`wineserver -k`) und auswerten: Zaehle pro Enumerationszyklus die Zeilen
-   `hid_internal_dispatch write output report` (Schreibzugriffe) und `deliver_next_report ... input report`
-   (Antworten); ein Zyklus beginnt bei jeder `HidD_GetHidGuid`-Gruppe.
-   - **Erfolg:** die ersten Zyklen haben 31 Writes und 31 Reads, danach folgen Zyklen mit je 1 Write/1 Read
-     (Ueberwachungsmodus). Im tempbase-Fenster zeigt die Statusleiste ein verbundenes Geraet, "Download"
-     zeigt einen Fortschrittsbalken (der Benutzer muss das ansehen und bestaetigen).
-   - **Fehlschlag:** dauerhaft Zyklen mit nur 4 Writes = derselbe Fehler wie zuvor (Patch wirkt nicht).
-   Detaildiagnose: die Klasse `hid.cs` mit Wines Mono `mcs.exe` (`~/.wine/drive_c/windows/mono/mono-2.0/lib/mono/4.5/mcs.exe`,
-   Aufruf mit `wine`, Option `-platform:x86`) zusammen mit einem kleinen Testprogramm kompilieren, in
-   dem die Ausnahmen ausgegeben werden (`catch (Exception __e) { Console.WriteLine(__e); }`). Das hat den
-   IOException-997-Fehler sichtbar gemacht. Wichtig: als **x86** bauen, sonst findet SetupDi keine Geraete.
-5. **Werkzeuge aktualisieren, an beiden Stellen:**
-   - `~/.local/share/tempbase-shim/patch-dl.py` (wird vom Starter benutzt)
-   - eingebettete Kopie in `install-tempbase-wine.sh` (Abschnitt `cat > "$SHIM_DIR/patch-dl.py"`), damit
-     Neuinstallationen das neue Muster bekommen.
-   Danach `install-tempbase-wine.sh --pruefen` und einen echten Start ueber das Startmenue testen.
-   Falls der Shim geaendert werden muss: `hidraw-delay.c` neu bauen
-   (`gcc -O2 -shared -fPIC -o hidraw-delay.so hidraw-delay.c -ldl -lpthread`), ebenfalls im Skript nachziehen.
+   Stop after about 60 s (`wineserver -k`) and evaluate: per enumeration cycle, count the lines
+   `hid_internal_dispatch write output report` (writes) and `deliver_next_report ... input report`
+   (responses); a cycle starts at each `HidD_GetHidGuid` group.
+   - **Success:** the first cycles have 31 writes and 31 reads, followed by cycles with 1 write/1 read each
+     (monitoring mode). In the tempbase window, the status bar shows a connected device, "Download"
+     shows a progress bar (the user has to look at this and confirm).
+   - **Failure:** persistent cycles with only 4 writes = the same error as before (patch has no effect).
+   Detailed diagnosis: compile the class `hid.cs` with Wine Mono's `mcs.exe` (`~/.wine/drive_c/windows/mono/mono-2.0/lib/mono/4.5/mcs.exe`,
+   invoked with `wine`, option `-platform:x86`) together with a small test program that prints the
+   exceptions (`catch (Exception __e) { Console.WriteLine(__e); }`). This is what made the
+   IOException 997 error visible. Important: build as **x86**, otherwise SetupDi finds no devices.
+5. **Update the tools, in both places:**
+   - `~/.local/share/tempbase-shim/patch-dl.py` (used by the launcher)
+   - the embedded copy in `install-tempbase-wine.sh` (section `cat > "$SHIM_DIR/patch-dl.py"`), so that
+     new installations get the new pattern.
+   Then run `install-tempbase-wine.sh --check` and test a real start via the Start Menu.
+   If the shim needs to be changed: rebuild `hidraw-delay.c`
+   (`gcc -O2 -shared -fPIC -o hidraw-delay.so hidraw-delay.c -ldl -lpthread`) and update the script as well.
 
-## Sonderfall: "Device disconnected" nach einem Update, OHNE jede Fehlermeldung, obwohl `--pruefen` den Patch als aktiv zeigt
+## Special case: "Device disconnected" after an update, WITHOUT any error message, although `--check` shows the patch as active
 
-Gefunden und behoben am 2026-09-22 - bitte nicht neu untersuchen, nur ausfuehren:
+Found and fixed on 2026-09-22 - please do not investigate again, just carry out:
 
-**Ursache:** tempbase laedt bei der Selbstaktualisierung ein VOLLES, nicht-stilles Inno-Setup-Installationsprogramm
-herunter und startet es ohne Silent-Parameter (`Process.Start(setupFileSavePath)` in `ShowNewVersion.cs`). Dieses
-Setup legt bei jedem Lauf eine Verknuepfung auf dem Windows-"Desktop" an (`C:\users\Public\Desktop\tempbase 2.lnk`).
-Wine erzeugt daraufhin ein EIGENES, zweites `.desktop` direkt auf dem echten Schreibtisch (`xdg-user-dir DESKTOP`,
-z.B. `~/Schreibtisch` - **unabhaengig von `XDG_DATA_HOME`**, ein Sandbox-Override wirkt hier NICHT), mit einem
-reinen `wine "...lnk"`-Aufruf ohne unseren Starter. Ein Doppelklick auf dieses (neue) Schreibtisch-Symbol umgeht
-damit Patch und Shim, OHNE jede Meldung (der Starter wird ja gar nicht aufgerufen) - einfach wieder
-"Device disconnected".
+**Cause:** During its self-update, tempbase downloads a FULL, non-silent Inno Setup installer and
+runs it without silent parameters (`Process.Start(setupFileSavePath)` in `ShowNewVersion.cs`). On every run,
+this setup creates a shortcut on the Windows "Desktop" (`C:\users\Public\Desktop\tempbase 2.lnk`).
+Wine then creates its OWN, second `.desktop` file directly on the real desktop (`xdg-user-dir DESKTOP`,
+e.g. `~/Desktop`, localized on some systems such as `~/Schreibtisch` - **independent of `XDG_DATA_HOME`**,
+a sandbox override has NO effect here), with a plain `wine "...lnk"` call without our launcher.
+Double-clicking this (new) desktop icon therefore bypasses patch and shim WITHOUT any message (the launcher
+is never called) - just "Device disconnected" again.
 
-**Bereits behoben in `install-tempbase-wine.sh`:** sucht seitdem tempbase-`.desktop`-Dateien zusaetzlich im echten
-Schreibtisch-Verzeichnis und biegt beide (Startmenue + Schreibtisch) auf den Starter um. Laeuft seitdem auch OHNE
-Installationsdatei als reiner Reparaturlauf (`./install-tempbase-wine.sh --ja`, ggf. `--ohne-apt`), wenn tempbase
-schon installiert ist. `--pruefen` zeigt ein defektes Schreibtisch-Symbol als
-`[FEHLT] Schreibtisch-Symbol ohne Starter`.
+**Already fixed in `install-tempbase-wine.sh`:** since then it also looks for tempbase `.desktop` files in the
+real desktop directory and redirects both (Start Menu + desktop) to the launcher. Since then it also runs
+WITHOUT an installer file as a pure repair run (`./install-tempbase-wine.sh --yes`, optionally `--no-apt`) when
+tempbase is already installed. `--check` reports a broken desktop icon as
+`[MISSING] Desktop icon without launcher`.
 
-**Zusaetzlich gehaertet (ebenfalls 2026-09-22):** Beide `.desktop`-Dateien (Startmenue + Schreibtisch) werden nach
-dem Fix mit `chmod 555` schreibgeschuetzt (ausfuehrbar, aber fuer niemanden beschreibbar). Empirisch mit dem echten,
-direkt vom Hersteller-Server geladenen Update-Paket getestet: Wine/winemenubuilder ueberschreibt eine bestehende
-`.desktop`-Datei per open+truncate (nicht per unlink+rename) und haelt sich daher an fehlende Schreibrechte - ein
-erneuter Update-Lauf liess die schreibgeschuetzte Datei (Inode, Rechte, Inhalt) unveraendert, keine Fehlermeldung im
-Setup-Log. Ein Deinstallieren (unlink, braucht nur Verzeichnisrechte) bleibt davon unberuehrt moeglich.
-`install-tempbase-wine.sh` hebt den Schreibschutz bei einer eigenen Reparatur selbst kurz auf (`chmod u+w` vor dem
-Schreiben) und setzt ihn danach wieder. Damit ist ein erneuter Lauf nach jedem Update nur noch ein zusaetzliches
-Sicherheitsnetz, keine notwendige Voraussetzung mehr.
+**Additionally hardened (also 2026-09-22):** After the fix, both `.desktop` files (Start Menu + desktop) are
+write-protected with `chmod 555` (executable, but writable by nobody). Tested empirically with the real update
+package downloaded directly from the vendor's server: Wine/winemenubuilder overwrites an existing
+`.desktop` file via open+truncate (not via unlink+rename) and therefore respects missing write permissions - a
+repeated update run left the write-protected file (inode, permissions, content) unchanged, with no error message
+in the setup log. Uninstalling (unlink, only needs directory permissions) remains possible regardless.
+`install-tempbase-wine.sh` briefly lifts the write protection itself during its own repair (`chmod u+w` before
+writing) and restores it afterwards. This makes re-running the script after every update merely an additional
+safety net, no longer a necessary step.
 
-**Nachtrag vom selben Tag - ZWEI eigene Fehler beim ersten Versuch, bitte beide beruecksichtigen:**
-1. Zuerst wurde `chmod 444` (kein X-Bit) verwendet. Ergebnis beim Benutzer: Der Schreibtisch-Link fragte
-   "vertrauenswuerdig?" (liess sich mit Ja trotzdem starten), der Startmenue-Link tat gar nichts - GNOME/Cinnamon/
-   Nemo behandeln eine `.desktop`-Datei ohne Ausfuehrungsbit nicht als startbar. Korrektur: `chmod 555` statt
-   `444` ueberall (im Fix selbst UND im neu angelegten Ersatz-Menueeintrag, falls Wine keinen erstellt hat).
-   Wichtig: das X-Bit einer `.desktop`-Datei hat NICHTS mit der Ausfuehrbarkeit des `Exec=`-Ziels zu tun, es ist
-   eine reine Vertrauens-/Startbarkeits-Markierung der Desktop-Umgebung.
-2. Der Startmenue-Eintrag `.../applications/wine/Programs/tempbase 2/tempbase 2.desktop` enthielt eine `Path=`-
-   Zeile (Arbeitsverzeichnis beim Start), die zufaellig noch auf einen laengst geloeschten Sandbox-Testordner
-   zeigte (Ueberbleibsel davon, dass Wine diese Zeile beim Erstellen mit dem WINEPREFIX aus dem gerade laufenden
-   Testkontext befuellt hatte). Ein nicht (mehr) existierendes `Path=`-Verzeichnis laesst den Start lautlos
-   scheitern - kein Dialog, keine Fehlermeldung, das Symbol tut einfach nichts. `fix_desktop_file()` in
-   `install-tempbase-wine.sh` setzt `Path=` seitdem IMMER explizit auf `$TB_DIR` (den echten tempbase-Ordner im
-   aktuellen `$WINEPREFIX`), unabhaengig davon, was vorher dort stand.
-   **Lehre fuer eigene Tests:** Sandbox-Testlaeufe (eigener `WINEPREFIX`/`XDG_DATA_HOME`) koennen trotzdem in die
-   ECHTEN `~/.local/share/applications/**`-Dateien hineinschreiben, wenn Wine's winemenubuilder darin zufaellig
-   den gerade aktiven `WINEPREFIX`-Pfad vermerkt (analog zum Schreibtisch-Fall oben). Nach Sandbox-Tests immer
-   `grep -r "Path=\|scratchpad\|/tmp/" ~/.local/share/applications ~/Schreibtisch 2>/dev/null` pruefen, um
-   Verunreinigungen der echten Dateien zu finden, bevor man den Fall als erledigt betrachtet.
+**Addendum from the same day - TWO of our own mistakes in the first attempt, please take both into account:**
+1. At first, `chmod 444` (no X bit) was used. Result for the user: the desktop link asked
+   "trusted?" (could still be started by answering yes), the Start Menu link did nothing at all - GNOME/Cinnamon/
+   Nemo do not treat a `.desktop` file without the execute bit as launchable. Correction: `chmod 555` instead of
+   `444` everywhere (in the fix itself AND in the newly created replacement menu entry, in case Wine did not create one).
+   Important: the X bit of a `.desktop` file has NOTHING to do with whether the `Exec=` target is executable; it is
+   purely a trust/launchability marker of the desktop environment.
+2. The Start Menu entry `.../applications/wine/Programs/tempbase 2/tempbase 2.desktop` contained a `Path=`
+   line (working directory at launch) that happened to still point to a long-deleted sandbox test folder
+   (a leftover from Wine filling in this line at creation time with the WINEPREFIX of the test context
+   that was running at the time). A `Path=` directory that does not exist (anymore) makes the launch fail
+   silently - no dialog, no error message, the icon simply does nothing. Since then, `fix_desktop_file()` in
+   `install-tempbase-wine.sh` ALWAYS sets `Path=` explicitly to `$TB_DIR` (the real tempbase folder in the
+   current `$WINEPREFIX`), regardless of what was there before.
+   **Lesson for your own tests:** sandbox test runs (with their own `WINEPREFIX`/`XDG_DATA_HOME`) can still write
+   into the REAL `~/.local/share/applications/**` files if Wine's winemenubuilder happens to record the
+   currently active `WINEPREFIX` path in them (analogous to the desktop case above). After sandbox tests, always
+   check `grep -r "Path=\|scratchpad\|/tmp/" ~/.local/share/applications "$(xdg-user-dir DESKTOP)" 2>/dev/null` to find
+   contamination of the real files before considering the case closed.
 
-**Ebenfalls mit dem echten Update-Paket ueberprueft:** Der Windows-Startmenue-Eintrag selbst wird von einer
-tempbase-Selbstaktualisierung NICHT neu geschrieben (Zeitstempel vor/nach einem echten Versionssprung 3.1.2 -> 3.1.4
-identisch bis auf die Nanosekunde) - betroffen ist ausschliesslich das neu angelegte Schreibtisch-Symbol. Die
-Update-URL/-XML steht fest in `Tasks/AutoUpgrade/CCheckNewVersionTask.cs`
-(`http://www.tempmate.com/downloads/tempbase2/Server.xml`, darin `ReleaseUrl`) und laesst sich damit fuer Tests
-direkt herunterladen, ohne den Update-Dialog in der laufenden Anwendung anklicken zu muessen.
+**Also verified with the real update package:** the Windows Start Menu entry itself is NOT rewritten by a
+tempbase self-update (timestamps before/after a real version jump 3.1.2 -> 3.1.4 identical down to the
+nanosecond) - only the newly created desktop icon is affected. The update URL/XML is hard-coded in
+`Tasks/AutoUpgrade/CCheckNewVersionTask.cs`
+(`http://www.tempmate.com/downloads/tempbase2/Server.xml`, containing `ReleaseUrl`) and can therefore be
+downloaded directly for tests without having to click through the update dialog in the running application.
 
-**Wenn es trotzdem wieder auftritt:**
-1. `install-tempbase-wine.sh --pruefen`; bei "Schreibtisch-Symbol ohne Starter" einfach
-   `install-tempbase-wine.sh --ja` (ohne Installationsdatei) erneut ausfuehren.
-2. Falls `xdg-user-dir DESKTOP` nicht das tatsaechlich benutzte Verzeichnis liefert: von Hand suchen mit
-   `grep -rl "tempbase" ~/Desktop ~/Schreibtisch ~/.local/share/applications 2>/dev/null | xargs grep -L "tempbase-start.sh"`.
-   ACHTUNG (selbst hier hineingetappt): Ist der Schreibtisch-Ordner ein Symlink (z.B. auf einen Cloud-Sync-Ordner,
-   `readlink ~/Schreibtisch` zeigt es), findet `find <symlink> ...` OHNE `-L` darin NICHTS - vorher mit
-   `readlink -f` auf den echten Pfad aufloesen (macht `install-tempbase-wine.sh` bereits fuer `DESKTOP_DIR`).
-3. Legt tempbase kuenftig weitere Verknuepfungsorte an (Schnellstart, angepinnt): gleiches Muster - Datei finden,
-   `chmod u+w`, `Exec=` (und ggf. `Path=`) per `sed` auf den Starter/`$TB_DIR` umbiegen, `chmod 555`.
+**If it happens again anyway:**
+1. `install-tempbase-wine.sh --check`; if it reports "Desktop icon without launcher", simply run
+   `install-tempbase-wine.sh --yes` (without installer file) again.
+2. If `xdg-user-dir DESKTOP` does not return the directory actually in use: search manually with
+   `grep -rl "tempbase" ~/Desktop ~/.local/share/applications 2>/dev/null | xargs grep -L "tempbase-start.sh"`
+   (add the localized desktop folder, e.g. `~/Schreibtisch`, if there is one).
+   CAUTION (fell into this trap ourselves): if the desktop folder is a symlink (e.g. to a cloud sync folder,
+   `readlink "$(xdg-user-dir DESKTOP)"` shows it), `find <symlink> ...` WITHOUT `-L` finds NOTHING in it -
+   resolve it to the real path with `readlink -f` first (`install-tempbase-wine.sh` already does this for
+   `DESKTOP_DIR`).
+3. If tempbase creates further shortcut locations in the future (quick launch, pinned): same pattern - find the file,
+   `chmod u+w`, redirect `Exec=` (and if needed `Path=`) to the launcher/`$TB_DIR` via `sed`, `chmod 555`.
 
-## Hinweise
+## Notes
 
-- Sudo-Befehle kann die Sitzung nicht selbst ausfuehren (Passwort). Der Benutzer tippt sie mit `! <befehl>`.
-- Den Benutzer vor Aenderungen am echten Prefix, an `.desktop`-Dateien und am Systempaketstand fragen.
-- Nach jedem Test tempbase-/wineserver-Prozesse beenden (`WINEPREFIX=... wineserver -k`) und Testkopien
-  des Prefix (je ca. 2 GB) wieder loeschen.
-- Wenn ein Wine-Update oder ein neues Mono etwas anderes bricht: zuerst pruefen, ob
-  `IOException 997` noch auftritt (Testprogramm oben). Ein Bericht dazu an das Wine-Mono-Projekt liegt als
-  `wine-mono-bugreport-filestream-overlapped.md` samt `Repro.cs` vor (Stand 2026-09-21, noch nicht eingereicht).
-  Wird der Fehler in Wine Mono behoben, entfaellt der DL.exe-Patch.
+- The session cannot run sudo commands itself (password). The user types them with `! <command>`.
+- Ask the user before making changes to the real prefix, to `.desktop` files, or to the installed system packages.
+- After every test, terminate tempbase/wineserver processes (`WINEPREFIX=... wineserver -k`) and delete test copies
+  of the prefix (about 2 GB each) again.
+- If a Wine update or a new Mono breaks something else: first check whether
+  `IOException 997` still occurs (test program above). A draft report on this for the Wine Mono project
+  (`wine-mono-bugreport-filestream-overlapped.md` with `Repro.cs`, as of 2026-09-21) exists but has not been
+  submitted yet and is not part of this repository.
+  If the bug is fixed in Wine Mono, the DL.exe patch is no longer needed.
 MDEOF
 
-# Biegt eine .desktop-Datei auf den Starter um und macht sie danach schreibgeschuetzt
-# (chmod 555). Wine/winemenubuilder ueberschreibt eine bestehende .desktop-Datei per
-# open+truncate (nicht per unlink+rename) - das respektiert normale Dateirechte, ein
-# Loeschen beim Deinstallieren (unlink, nur Verzeichnisrechte noetig) bleibt moeglich.
-# Damit bleibt unsere Umleitung auch dann bestehen, wenn tempbase/Wine spaeter versucht,
-# dieselbe Datei erneut zu erzeugen (siehe "Sonderfall" oben).
+# Redirects a .desktop file to the launcher and then makes it read-only
+# (chmod 555). Wine/winemenubuilder overwrites an existing .desktop file via
+# open+truncate (not via unlink+rename) - this respects normal file permissions,
+# deleting it when uninstalling (unlink, only needs directory permissions) still works.
+# This way our redirection survives even if tempbase/Wine later tries to create
+# the same file again (see "Special case" in REPAIR.md).
 fix_desktop_file() {
     local df="$1" backup="$2"
     chmod u+w "$df" 2>/dev/null || true
     cp -n -p "$df" "$backup" 2>/dev/null || true
     sed -i -E "s#^(Exec(\[[a-z_A-Z@]+\])?=).*#\1\"$SHIM_DIR/tempbase-start.sh\"#" "$df"
-    # "Path=" (Arbeitsverzeichnis beim Start) ebenfalls fest auf den echten tempbase-Ordner
-    # setzen, statt sich auf das zu verlassen, was Wine dort eingetragen hat - ein falscher/
-    # nicht mehr existierender Pfad laesst den Start sonst lautlos scheitern (kein Dialog,
-    # keine Fehlermeldung, das Startmenue-Symbol tut einfach nichts).
+    # Also pin "Path=" (working directory at launch) to the real tempbase folder instead
+    # of relying on whatever Wine put there - a wrong/no longer existing path otherwise
+    # makes the launch fail silently (no dialog, no error message, the Start Menu icon
+    # simply does nothing).
     if grep -q '^Path=' "$df"; then
         sed -i -E "s#^Path=.*#Path=$TB_DIR#" "$df"
     else
         printf 'Path=%s\n' "$TB_DIR" >> "$df"
     fi
-    # chmod 555 statt 444: das Ausfuehrungsbit ist noetig, damit GNOME/Cinnamon/Nemo die
-    # Datei ueberhaupt als startbare/vertrauenswuerdige .desktop-Datei behandeln. Das
-    # W-Bit bleibt fuer niemanden gesetzt - das (nicht das X-Bit) ist es, was Wine daran
-    # hindert, die Datei bei einem tempbase-Update stillschweigend zu ueberschreiben.
+    # chmod 555 rather than 444: the execute bit is needed for GNOME/Cinnamon/Nemo to
+    # treat the file as a launchable/trusted .desktop file at all. The W bit stays unset
+    # for everyone - that (not the X bit) is what stops Wine from silently overwriting
+    # the file during a tempbase update.
     chmod 555 "$df"
 }
 
 mkdir -p "$APPS_DIR"
-DESKTOP_FILES=$(find "$APPS_DIR" -iname "*tempbase*.desktop" 2>/dev/null | grep -vi -e entfernen -e uninstall -e remove -e deinstall || true)
+DESKTOP_FILES=$(find "$APPS_DIR" -iname "*tempbase*.desktop" 2>/dev/null | grep -vi "${UNINSTALL_FILTER[@]}" || true)
 if [ -n "$DESKTOP_FILES" ]; then
     while IFS= read -r DF; do
         fix_desktop_file "$DF" "$SHIM_DIR/$(basename "$DF").orig"
-        echo "    Menue-Eintrag angepasst und schreibgeschuetzt: $DF"
+        echo "    Menu entry redirected and made read-only: $DF"
     done <<< "$DESKTOP_FILES"
 else
     ICON=$(find "$DATA_HOME/icons" -iname "*tempbase*" -o -iname "*DL*.png" 2>/dev/null | head -1 || true)
@@ -690,51 +693,51 @@ else
 [Desktop Entry]
 Type=Application
 Name=tempbase 2
-Comment=TempMate-Logger auslesen (Wine)
+Comment=Read out TempMate loggers (Wine)
 Exec="$SHIM_DIR/tempbase-start.sh"
 Icon=${ICON:-wine}
 Categories=Utility;
 StartupNotify=true
 DEOF
     chmod 555 "$APPS_DIR/tempbase-2.desktop"
-    echo "    Wine hat keinen Menue-Eintrag angelegt; erstellt: $APPS_DIR/tempbase-2.desktop"
+    echo "    Wine did not create a menu entry; created: $APPS_DIR/tempbase-2.desktop"
 fi
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$APPS_DIR" 2>/dev/null || true
 
-# Schreibtisch-Symbol: Wine legt dies unabhaengig von XDG_DATA_HOME direkt in $DESKTOP_DIR
-# an, sobald irgendeine Windows-Verknuepfung unter "...\Desktop" liegt (z.B. durch das
-# volle, nicht-stille Setup der tempbase-Selbstaktualisierung). Falls vorhanden, ebenfalls
-# auf den Starter umbiegen - sonst zeigt ein Doppelklick darauf ungepatchtes tempbase.
-# Der Schreibschutz (s.o.) verhindert dabei, dass Wine dieses Symbol beim naechsten
-# Update erneut ueberschreibt (getestet: Wine ueberschreibt per open+truncate, nicht per
-# unlink+rename, und respektiert daher fehlende Schreibrechte).
+# Desktop icon: Wine creates it directly in $DESKTOP_DIR, independent of XDG_DATA_HOME,
+# as soon as any Windows shortcut is located under "...\Desktop" (e.g. through the full,
+# non-silent setup of the tempbase self-update). If present, redirect it to the launcher
+# as well - otherwise double-clicking it starts unpatched tempbase.
+# The write protection (see above) prevents Wine from overwriting this icon again on the
+# next update (tested: Wine overwrites via open+truncate, not via unlink+rename, and
+# therefore respects missing write permissions).
 if [ -d "$DESKTOP_DIR" ]; then
-    DESKTOP_ICON_FILES=$(find "$DESKTOP_DIR" -maxdepth 1 -iname "*tempbase*.desktop" 2>/dev/null | grep -vi -e entfernen -e uninstall -e remove -e deinstall || true)
+    DESKTOP_ICON_FILES=$(find "$DESKTOP_DIR" -maxdepth 1 -iname "*tempbase*.desktop" 2>/dev/null | grep -vi "${UNINSTALL_FILTER[@]}" || true)
     if [ -n "$DESKTOP_ICON_FILES" ]; then
         while IFS= read -r DF; do
-            fix_desktop_file "$DF" "$SHIM_DIR/schreibtisch-$(basename "$DF").orig"
-            echo "    Schreibtisch-Symbol angepasst und schreibgeschuetzt: $DF"
+            fix_desktop_file "$DF" "$SHIM_DIR/desktop-$(basename "$DF").orig"
+            echo "    Desktop icon redirected and made read-only: $DF"
         done <<< "$DESKTOP_ICON_FILES"
     fi
 fi
 
-# ------------------------------------------------------- 6. Pruefung
-info "6/6: Abschlusspruefung"
-FEHLER=0
-pruefen || FEHLER=1
+# ------------------------------------------------------- 6. Check
+info "6/6: Final check"
+FAILED=0
+check_install || FAILED=1
 
 echo ""
-echo "==> Fertig."
-if [ "${NEUANMELDEN:-0}" = 1 ]; then
-    echo "    WICHTIG: Fuer die Gruppe plugdev einmal ab- und wieder anmelden (oder neu starten),"
-    echo "    sonst hat tempbase keinen Zugriff auf den USB-Logger."
+echo "==> Done."
+if [ "${NEED_RELOGIN:-0}" = 1 ]; then
+    echo "    IMPORTANT: For the plugdev group to take effect, log out and back in once (or reboot),"
+    echo "    otherwise tempbase has no access to the USB logger."
 fi
-echo "    Logger einstecken (bei bereits eingestecktem Logger einmal aus- und wieder einstecken),"
-echo "    tempbase 2 ueber das Startmenue starten. Die Verbindung braucht beim Start ca. 10 s."
-echo "    Der Starter prueft bei jedem Start den USB-Patch und holt ihn nach einem tempbase-Update nach."
-echo "    Start- und Schreibtisch-Symbol sind jetzt schreibgeschuetzt, damit eine tempbase-"
-echo "    Selbstaktualisierung sie nicht wieder durch einen ungepatchten Aufruf ersetzen kann."
-echo "    Sollte trotzdem mal wieder 'Device disconnected' ohne Fehlermeldung auftreten, hilft"
-echo "    ein erneuter Lauf dieses Skripts, ohne Installationsdatei:  $0"
-echo "    Spaeter pruefen:  $0 --pruefen"
-exit "$FEHLER"
+echo "    Plug in the logger (if it is already plugged in, unplug and replug it once),"
+echo "    then start tempbase 2 from the Start Menu. Connecting takes about 10 s at startup."
+echo "    The launcher checks the USB patch on every start and re-applies it after a tempbase update."
+echo "    Start Menu and desktop icons are now read-only, so that a tempbase self-update"
+echo "    cannot replace them with an unpatched launch command again."
+echo "    Should 'Device disconnected' without an error message ever show up again, re-running"
+echo "    this script without an installer file helps:  $0"
+echo "    Check later:  $0 --check"
+exit "$FAILED"
